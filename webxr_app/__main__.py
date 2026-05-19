@@ -24,9 +24,6 @@ from teleop_core import (
 from teleop_backends.pointcloud import (
     MockPointCloudSource, MultiRealSenseSource, PybulletPointCloudSource,
 )
-from teleop_backends.robot import (
-    AeroArmDriver, FloatingWristDriver, NoopRobotDriver, PybulletRobotDriver,
-)
 
 
 def _make_pc_source(name: str, args: argparse.Namespace):
@@ -45,8 +42,12 @@ def _make_pc_source(name: str, args: argparse.Namespace):
 def _make_robot_driver(name: str, args: argparse.Namespace):
     """Resolve --robot-backend into a RobotDriver instance."""
     if name == "noop":
+        from teleop_backends.robot import NoopRobotDriver
+
         return NoopRobotDriver(home=Pose.identity(frame="world"))
     if name == "pybullet":
+        from teleop_backends.robot import PybulletRobotDriver
+
         urdf = args.urdf
         if urdf is None:
             # Default to the URDF shipped in-tree (symlinked from the old
@@ -63,6 +64,8 @@ def _make_robot_driver(name: str, args: argparse.Namespace):
             urdf_path=urdf, gui=args.pybullet_gui, home_joint_angles=home_q,
         )
     if name == "floating":
+        from teleop_backends.robot import FloatingWristDriver
+
         urdf = args.urdf
         if urdf is None:
             urdf = Path(__file__).resolve().parent.parent / "urdf_rc5_right_hand" \
