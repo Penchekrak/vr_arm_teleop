@@ -80,6 +80,9 @@ export class StatusPanel {
   _calibrationHtml(calibration) {
     const autosave = calibration.autosave || {};
     const liveCorrection = calibration.live_correction || {};
+    const liveCorrectionLabel = liveCorrection.active
+      ? 'on'
+      : (calibration.finished && liveCorrection.enabled ? 'frozen' : 'off');
     const targets = calibration.targets || {};
     const targetRows = Object.entries(targets).map(([name, target]) => {
       const stable = target.stable ? 'stable' : 'solving';
@@ -125,7 +128,7 @@ export class StatusPanel {
       <div class="status-group">
         ${row('Cal mode', calibration.mode || 'none')}
         ${row('Finished', calibration.finished ? 'yes' : 'no', calibration.finished ? '' : 'warn')}
-        ${row('Live ICP', liveCorrection.enabled ? 'on' : 'off', liveCorrection.enabled ? '' : 'warn')}
+        ${row('Live ICP', liveCorrectionLabel, liveCorrection.active ? '' : 'warn')}
         ${row('Anchor', calibration.anchor_camera || 'none')}
         ${row('Autosave', autosave.state || 'none', autosave.state === 'saved' ? '' : 'warn')}
         ${row('All stable', calibration.all_stable ? 'yes' : 'no', calibration.all_stable ? '' : 'warn')}

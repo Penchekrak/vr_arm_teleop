@@ -537,6 +537,68 @@ def test_finish_calibration_freezes_latest_non_anchor_transforms():
     )
 
 
+def test_calibration_dashboard_feeds_include_unlinked_target_camera():
+    source = object.__new__(CalibrationPointCloudSource)
+    source._readers = [
+        (
+            SimpleNamespace(
+                name="d405",
+                urdf_link="d405_depth_optical_frame",
+                width=640,
+                height=480,
+            ),
+            object(),
+        ),
+        (
+            SimpleNamespace(
+                name="d435i",
+                urdf_link=None,
+                width=640,
+                height=480,
+            ),
+            object(),
+        ),
+    ]
+
+    feeds = source.dashboard_camera_feeds()
+
+    assert [feed["name"] for feed in feeds] == ["d405", "d435i"]
+    assert feeds[1]["url"] == "/api/cameras/d435i/color.jpg"
+    assert feeds[1]["calibration_url"] == "/api/cameras/d435i/calibration.jpg"
+    assert "urdf_link" not in feeds[1]
+
+
+def test_calibration_snapshot_reports_live_correction_inactive_after_finish():
+    source = object.__new__(CalibrationPointCloudSource)
+    source._optimizer = SimpleNamespace(status=lambda: {
+        "mode": "continuous_calibration",
+        "anchor_camera": "d405",
+        "all_stable": True,
+        "targets": {},
+    })
+    source._config = SimpleNamespace(cameras=())
+    source._anchor = SimpleNamespace(name="d405")
+    source._latest_detections = {}
+    source._latest_transforms = {}
+    source._latest_board_poses = {}
+    source._latest_diagnostics = {}
+    source._finished = True
+    source._live_correction_config = LiveCorrectionConfig(enabled=True)
+    source._live_correction = LiveCorrectionTracker(source._live_correction_config)
+    source._latest_arm_motion_m = None
+    source._latest_sample_rejected_reason = None
+    source._autosave = False
+    source._autosave_state = "finished"
+    source._last_saved_timestamp = None
+    source._latest_error = None
+
+    snapshot = source.calibration_snapshot()
+
+    assert snapshot["finished"] is True
+    assert snapshot["live_correction"]["enabled"] is True
+    assert snapshot["live_correction"]["active"] is False
+
+
 def _synthetic_charuco_scene(*, depth: float = 0.4):
     cv2 = importlib.import_module("cv2")
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)

@@ -317,18 +317,18 @@ class CalibrationPointCloudSource:
     def dashboard_camera_feeds(self) -> list[dict[str, object]]:
         feeds = []
         for camera, _ in self._readers:
-            if not camera.urdf_link:
-                continue
-            feeds.append({
+            feed = {
                 "name": camera.name,
-                "urdf_link": camera.urdf_link,
                 "url": f"/api/cameras/{quote(camera.name, safe='')}/color.jpg",
                 "calibration_url": (
                     f"/api/cameras/{quote(camera.name, safe='')}/calibration.jpg"
                 ),
                 "width": int(camera.width),
                 "height": int(camera.height),
-            })
+            }
+            if camera.urdf_link:
+                feed["urdf_link"] = camera.urdf_link
+            feeds.append(feed)
         return feeds
 
     def latest_color_jpeg(self, camera_name: str) -> bytes | None:
@@ -394,6 +394,10 @@ class CalibrationPointCloudSource:
             "finished": self._finished,
             "live_correction": {
                 "enabled": self._live_correction_config.enabled,
+                "active": (
+                    self._live_correction_config.enabled
+                    and not self._finished
+                ),
                 "targets": self._live_correction.diagnostics(),
             },
             "arm_motion_m": self._latest_arm_motion_m,

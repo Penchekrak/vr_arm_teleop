@@ -134,6 +134,38 @@ def test_dashboard_snapshot_contains_model_workspace_robot_and_unaligned_xr():
     asyncio.run(run())
 
 
+def test_dashboard_snapshot_keeps_camera_feeds_without_urdf_link():
+    class UnlinkedCameraPointCloud(CountingPointCloud):
+        def dashboard_camera_feeds(self):
+            return [
+                {
+                    "name": "d435i",
+                    "url": "/api/cameras/d435i/color.jpg",
+                    "calibration_url": "/api/cameras/d435i/calibration.jpg",
+                    "width": 640,
+                    "height": 480,
+                }
+            ]
+
+    hub = TelemetryHub(
+        point_cloud_source=UnlinkedCameraPointCloud(),
+        robot_driver=FakeRobot(),
+        workspace=_workspace(),
+        urdf_url="/robot/robot.urdf",
+        urdf_assets_url="/robot/assets/",
+    )
+
+    assert hub.snapshot()["model"]["camera_feeds"] == [
+        {
+            "name": "d435i",
+            "url": "/api/cameras/d435i/color.jpg",
+            "calibration_url": "/api/cameras/d435i/calibration.jpg",
+            "width": 640,
+            "height": 480,
+        }
+    ]
+
+
 def test_dashboard_xr_pose_stays_unaligned_until_anchor_exists():
     hub = TelemetryHub(
         point_cloud_source=CountingPointCloud(),
