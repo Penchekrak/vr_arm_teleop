@@ -71,6 +71,8 @@ class _Detection:
     charuco_corner_count: int
     depth_valid_corners: int
     kabsch_rms_m: float | None
+    depth_fit_rms_m: float | None
+    depth_scale: float | None
     depth_range_m: tuple[float, float] | None
     frame_timestamp: float | None
     frame_number: int | None
@@ -653,7 +655,13 @@ def _make_dashboard_app(
     app.router.add_get("/api/snapshot", snapshot)
     app.router.add_get("/api/cameras/{name}/color.jpg", camera_color)
     app.router.add_get("/api/cameras/{name}/calibration.jpg", camera_calibration)
-    app.router.add_get("/robot/robot.urdf", lambda _request: web.FileResponse(urdf_path))
+    app.router.add_get(
+        "/robot/robot.urdf",
+        lambda _request: web.FileResponse(
+            urdf_path,
+            headers={"Cache-Control": "no-store"},
+        ),
+    )
     app.router.add_get("/robot/assets/{tail:.*}", robot_asset)
     app.router.add_get("/", lambda _request: web.FileResponse(static_dir / "index.html"))
     app.router.add_static("/", path=str(static_dir), show_index=False)
@@ -720,6 +728,13 @@ def _detect_board_pose(
 
     object_points = _charuco_object_points(board, charuco_ids)
     observed_pixels = np.asarray(charuco_corners, dtype=np.float64).reshape(-1, 2)
+    image_camera_from_board, image_reprojection_error = _estimate_charuco_pose(
+        cv2,
+        object_points,
+        observed_pixels,
+        camera_matrix,
+        distortion,
+    )
     valid_object_points = []
     valid_camera_points = []
     valid_observed_pixels = []
@@ -751,51 +766,107 @@ def _detect_board_pose(
             frame=frame,
         )
 
-    camera_from_board, kabsch_rms = _kabsch_transform(
-        np.asarray(valid_object_points, dtype=np.float64),
-        np.asarray(valid_camera_points, dtype=np.float64),
+    depth_object_points = np.asarray(valid_object_points, dtype=np.float64)
+    depth_camera_points = np.asarray(valid_camera_points, dtype=np.float64)
+    rigid_camera_from_board, kabsch_rms = _kabsch_transform(
+        depth_object_points,
+        depth_camera_points,
     )
-    rotation = camera_from_board[:3, :3]
-    translation = camera_from_board[:3, 3]
+    depth_camera_from_board, depth_fit_rms, depth_scale = _similarity_pose(
+        depth_object_points,
+        depth_camera_points,
+    )
+    if depth_fit_rms <= max_kabsch_rms_m:
+        accepted_camera_from_board = depth_camera_from_board
+    elif image_camera_from_board is not None:
+        accepted_camera_from_board = image_camera_from_board
+    else:
+        accepted_camera_from_board = rigid_camera_from_board
+    rotation = accepted_camera_from_board[:3, :3]
+    translation = accepted_camera_from_board[:3, 3]
     rvec, _ = cv2.Rodrigues(rotation)
     tvec = translation.reshape(3, 1)
-    reprojection_error = _object_reprojection_error(
-        cv2,
-        np.asarray(valid_object_points, dtype=np.float64),
-        np.asarray(valid_observed_pixels, dtype=np.float64),
-        rvec,
-        tvec,
-        camera_matrix,
-        distortion,
+    reprojection_error = (
+        image_reprojection_error
+        if image_reprojection_error is not None
+        else _object_reprojection_error(
+            cv2,
+            np.asarray(valid_object_points, dtype=np.float64),
+            np.asarray(valid_observed_pixels, dtype=np.float64),
+            rvec,
+            tvec,
+            camera_matrix,
+            distortion,
+        )
     )
     cv2.drawFrameAxes(overlay, camera_matrix, distortion, rvec, tvec, 0.05)
-    if kabsch_rms > max_kabsch_rms_m:
+    if (
+        image_camera_from_board is None
+        and kabsch_rms > max_kabsch_rms_m
+        and depth_fit_rms > max_kabsch_rms_m
+    ):
         return _detection_result(
             accepted=False,
             reason="kabsch_rms_too_high",
-            camera_from_board=camera_from_board,
+            camera_from_board=rigid_camera_from_board,
             reprojection_error=reprojection_error,
             overlay_rgb=overlay,
             marker_count=marker_count,
             charuco_corner_count=charuco_count,
             depth_valid_corners=depth_valid_corners,
             kabsch_rms_m=kabsch_rms,
+            depth_fit_rms_m=depth_fit_rms,
+            depth_scale=depth_scale,
             depth_range_m=depth_range,
             frame=frame,
         )
     return _detection_result(
         accepted=True,
         reason=None,
-        camera_from_board=camera_from_board,
+        camera_from_board=accepted_camera_from_board,
         reprojection_error=reprojection_error,
         overlay_rgb=overlay,
         marker_count=marker_count,
         charuco_corner_count=charuco_count,
         depth_valid_corners=depth_valid_corners,
         kabsch_rms_m=kabsch_rms,
+        depth_fit_rms_m=depth_fit_rms,
+        depth_scale=depth_scale,
         depth_range_m=depth_range,
         frame=frame,
     )
+
+
+def _estimate_charuco_pose(
+    cv2,
+    object_points: np.ndarray,
+    observed_pixels: np.ndarray,
+    camera_matrix,
+    distortion,
+) -> tuple[np.ndarray | None, float | None]:
+    if np.asarray(object_points).reshape(-1, 3).shape[0] < 4:
+        return None, None
+    ok, rvec, tvec = cv2.solvePnP(
+        np.asarray(object_points, dtype=np.float32).reshape(-1, 3),
+        np.asarray(observed_pixels, dtype=np.float32).reshape(-1, 2),
+        camera_matrix,
+        distortion,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+    if not ok:
+        return None, None
+    rotation, _ = cv2.Rodrigues(rvec)
+    transform = transform_from_rt(rotation, np.asarray(tvec, dtype=np.float64).reshape(3))
+    reprojection_error = _object_reprojection_error(
+        cv2,
+        object_points,
+        observed_pixels,
+        rvec,
+        tvec,
+        camera_matrix,
+        distortion,
+    )
+    return transform, reprojection_error
 
 
 def _detect_charuco_corners(cv2, board, gray, camera_matrix, distortion):
@@ -846,6 +917,8 @@ def _detection_result(
     charuco_corner_count: int = 0,
     depth_valid_corners: int = 0,
     kabsch_rms_m: float | None = None,
+    depth_fit_rms_m: float | None = None,
+    depth_scale: float | None = None,
     depth_range_m: tuple[float, float] | None = None,
 ) -> _Detection:
     return _Detection(
@@ -857,6 +930,10 @@ def _detection_result(
         charuco_corner_count=int(charuco_corner_count),
         depth_valid_corners=int(depth_valid_corners),
         kabsch_rms_m=None if kabsch_rms_m is None else float(kabsch_rms_m),
+        depth_fit_rms_m=(
+            None if depth_fit_rms_m is None else float(depth_fit_rms_m)
+        ),
+        depth_scale=None if depth_scale is None else float(depth_scale),
         depth_range_m=depth_range_m,
         frame_timestamp=frame.timestamp,
         frame_number=frame.frame_number,
@@ -931,6 +1008,35 @@ def _kabsch_transform(
     return transform_from_rt(rotation, translation), rms
 
 
+def _similarity_pose(
+    source_points: np.ndarray,
+    target_points: np.ndarray,
+) -> tuple[np.ndarray, float, float]:
+    source = np.asarray(source_points, dtype=np.float64).reshape(-1, 3)
+    target = np.asarray(target_points, dtype=np.float64).reshape(-1, 3)
+    if source.shape != target.shape or source.shape[0] < 3:
+        raise ValueError("similarity pose requires at least three paired 3D points")
+    source_centroid = np.mean(source, axis=0)
+    target_centroid = np.mean(target, axis=0)
+    source_centered = source - source_centroid
+    target_centered = target - target_centroid
+    covariance = source_centered.T @ target_centered
+    u, _, vt = np.linalg.svd(covariance)
+    rotation = vt.T @ u.T
+    if np.linalg.det(rotation) < 0.0:
+        vt[-1, :] *= -1.0
+        rotation = vt.T @ u.T
+    denominator = float(np.sum(source_centered * source_centered))
+    if denominator <= 0.0:
+        raise ValueError("similarity pose requires non-degenerate source points")
+    rotated_source = (rotation @ source_centered.T).T
+    scale = float(np.sum(rotated_source * target_centered) / denominator)
+    translation = target_centroid - scale * rotation @ source_centroid
+    transformed = scale * (rotation @ source.T).T + translation
+    rms = float(np.sqrt(np.mean(np.sum((transformed - target) ** 2, axis=1))))
+    return transform_from_rt(rotation, translation), rms, scale
+
+
 def _object_reprojection_error(
     cv2,
     object_points: np.ndarray,
@@ -961,6 +1067,8 @@ def _detection_status(detection: _Detection) -> dict:
         "charuco_corner_count": detection.charuco_corner_count,
         "depth_valid_corners": detection.depth_valid_corners,
         "kabsch_rms_m": detection.kabsch_rms_m,
+        "depth_fit_rms_m": detection.depth_fit_rms_m,
+        "depth_scale": detection.depth_scale,
         "depth_range_m": (
             None
             if detection.depth_range_m is None

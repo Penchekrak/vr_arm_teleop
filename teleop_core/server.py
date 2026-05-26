@@ -210,7 +210,10 @@ class TeleopServer:
     async def _handle_robot_urdf(self, _request) -> web.StreamResponse:
         if self._config.urdf_path is None:
             return web.Response(status=404, text="URDF not configured")
-        return web.FileResponse(Path(self._config.urdf_path))
+        return web.FileResponse(
+            Path(self._config.urdf_path),
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _handle_robot_asset(self, request) -> web.StreamResponse:
         root = self._config.robot_assets_root

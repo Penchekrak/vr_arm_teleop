@@ -21,8 +21,14 @@ function diagnosticLine(diagnostic) {
   const rms = diagnostic.kabsch_rms_m === null || diagnostic.kabsch_rms_m === undefined
     ? 'none'
     : `${fmt(diagnostic.kabsch_rms_m, 4)}m`;
+  const fit = diagnostic.depth_fit_rms_m === null || diagnostic.depth_fit_rms_m === undefined
+    ? 'none'
+    : `${fmt(diagnostic.depth_fit_rms_m, 4)}m`;
+  const scale = diagnostic.depth_scale === null || diagnostic.depth_scale === undefined
+    ? 'none'
+    : fmt(diagnostic.depth_scale, 3);
   const reproj = fmt(diagnostic.reprojection_error_px, 2);
-  return `${status} | corners ${corners} | depth ${depth} | rms ${rms} | reproj ${reproj}px`;
+  return `${status} | corners ${corners} | depth ${depth} | rigid ${rms} | fit ${fit} | scale ${scale} | reproj ${reproj}px`;
 }
 
 export class CalibrationDiagnosticsPanel {

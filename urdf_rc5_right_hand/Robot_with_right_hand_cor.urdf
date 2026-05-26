@@ -303,7 +303,7 @@
   <joint name="prehand_cam_to_d405_depth" type="fixed">
     <parent link="prehand_cam"/>
     <child link="d405_depth_frame"/>
-    <origin xyz="0.009 0.0675 0.0912" rpy="0 -1.5707963267948966 -1.5707963267948966"/>
+    <origin xyz="0.009 0.0675 0.0912" rpy="0 1.5707963267948966 -1.5707963267948966"/>
   </joint>
 
   <link name="d405_depth_optical_frame"/>

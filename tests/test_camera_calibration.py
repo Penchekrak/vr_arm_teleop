@@ -225,6 +225,15 @@ def test_canonical_urdf_resolves_world_to_d405_depth_optical_frame():
         atol=1e-6,
     )
 
+    base_from_tcp = tree.transform(
+        "world",
+        "right_tcp_link",
+        {f"joint{i}": 0.0 for i in range(6)},
+    )
+    camera_forward = base_from_camera[:3, 2] / np.linalg.norm(base_from_camera[:3, 2])
+    tcp_forward = base_from_tcp[:3, 2] / np.linalg.norm(base_from_tcp[:3, 2])
+    assert float(np.dot(camera_forward, tcp_forward)) > 0.999999
+
 
 def test_missing_camera_sdks_are_reported_only_when_feeds_start(monkeypatch):
     def missing_import(name):
@@ -458,6 +467,223 @@ def _synthetic_charuco_scene(*, depth: float = 0.4):
     return cv2, board, frame
 
 
+def _perspective_charuco_scene():
+    cv2 = importlib.import_module("cv2")
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
+    squares_x = 7
+    squares_y = 5
+    square_length = 0.04
+    board = cv2.aruco.CharucoBoard(
+        (squares_x, squares_y),
+        square_length,
+        0.03,
+        dictionary,
+    )
+    board_image = board.generateImage(
+        (squares_x * 90, squares_y * 90),
+        marginSize=0,
+    )
+    camera_matrix = np.array(
+        [
+            [620.0, 0.0, 320.0],
+            [0.0, 620.0, 240.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    distortion = np.zeros(5, dtype=np.float64)
+    rvec = np.array([[0.18], [-0.22], [0.08]], dtype=np.float64)
+    tvec = np.array([[0.02], [-0.01], [0.72]], dtype=np.float64)
+    board_extent = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [squares_x * square_length, 0.0, 0.0],
+            [squares_x * square_length, squares_y * square_length, 0.0],
+            [0.0, squares_y * square_length, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    projected, _ = cv2.projectPoints(
+        board_extent,
+        rvec,
+        tvec,
+        camera_matrix,
+        distortion,
+    )
+    source_quad = np.array(
+        [
+            [0.0, 0.0],
+            [board_image.shape[1] - 1.0, 0.0],
+            [board_image.shape[1] - 1.0, board_image.shape[0] - 1.0],
+            [0.0, board_image.shape[0] - 1.0],
+        ],
+        dtype=np.float32,
+    )
+    homography = cv2.getPerspectiveTransform(
+        source_quad,
+        projected.reshape(4, 2).astype(np.float32),
+    )
+    gray = np.full((480, 640), 255, dtype=np.uint8)
+    warped = cv2.warpPerspective(
+        board_image,
+        homography,
+        (640, 480),
+        dst=gray,
+        borderMode=cv2.BORDER_TRANSPARENT,
+    )
+    rgb = np.repeat(warped[:, :, None], 3, axis=2).astype(np.uint8)
+    depth_m = np.full((480, 640), 0.72, dtype=np.float32)
+    depth_m[:, :320] = 0.45
+    descriptor = CameraDescriptor(
+        name="perspective",
+        camera_type="realsense",
+        serial=None,
+        width=640,
+        height=480,
+        fps=30,
+        camera_matrix=camera_matrix.tolist(),
+        distortion=distortion.tolist(),
+    )
+    frame = CalibrationCameraFrame(
+        image_rgb=rgb,
+        depth_meters=depth_m,
+        descriptor=descriptor,
+        timestamp=123.0,
+        frame_number=456,
+    )
+    return cv2, board, frame
+
+
+def _scaled_metric_charuco_scene():
+    cv2 = importlib.import_module("cv2")
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
+    squares_x = 7
+    squares_y = 5
+    actual_square = 0.024
+    configured_square = 0.035
+    marker_ratio = 0.74
+    draw_board = cv2.aruco.CharucoBoard(
+        (squares_x, squares_y),
+        actual_square,
+        actual_square * marker_ratio,
+        dictionary,
+    )
+    detect_board = cv2.aruco.CharucoBoard(
+        (squares_x, squares_y),
+        configured_square,
+        configured_square * marker_ratio,
+        dictionary,
+    )
+    board_image = draw_board.generateImage(
+        (squares_x * 90, squares_y * 90),
+        marginSize=0,
+    )
+    camera_matrix = np.array(
+        [
+            [620.0, 0.0, 320.0],
+            [0.0, 620.0, 240.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    distortion = np.zeros(5, dtype=np.float64)
+    rvec = np.array([[0.18], [-0.22], [0.08]], dtype=np.float64)
+    tvec = np.array([[0.02], [-0.01], [0.72]], dtype=np.float64)
+    rotation, _ = cv2.Rodrigues(rvec)
+    board_extent = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [squares_x * actual_square, 0.0, 0.0],
+            [squares_x * actual_square, squares_y * actual_square, 0.0],
+            [0.0, squares_y * actual_square, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    projected, _ = cv2.projectPoints(
+        board_extent,
+        rvec,
+        tvec,
+        camera_matrix,
+        distortion,
+    )
+    source_quad = np.array(
+        [
+            [0.0, 0.0],
+            [board_image.shape[1] - 1.0, 0.0],
+            [board_image.shape[1] - 1.0, board_image.shape[0] - 1.0],
+            [0.0, board_image.shape[0] - 1.0],
+        ],
+        dtype=np.float32,
+    )
+    homography = cv2.getPerspectiveTransform(
+        source_quad,
+        projected.reshape(4, 2).astype(np.float32),
+    )
+    gray = np.full((480, 640), 255, dtype=np.uint8)
+    warped = cv2.warpPerspective(
+        board_image,
+        homography,
+        (640, 480),
+        dst=gray,
+        borderMode=cv2.BORDER_TRANSPARENT,
+    )
+    depth_m = np.zeros((480, 640), dtype=np.float32)
+    inv_homography = np.linalg.inv(homography)
+    xmin = max(0, int(np.floor(projected[:, 0, 0].min())) - 2)
+    xmax = min(640, int(np.ceil(projected[:, 0, 0].max())) + 3)
+    ymin = max(0, int(np.floor(projected[:, 0, 1].min())) - 2)
+    ymax = min(480, int(np.ceil(projected[:, 0, 1].max())) + 3)
+    for y in range(ymin, ymax):
+        xs = np.arange(xmin, xmax)
+        pixels = np.stack(
+            [xs.astype(np.float64), np.full_like(xs, y, dtype=np.float64), np.ones_like(xs, dtype=np.float64)],
+            axis=1,
+        )
+        board_pixels = pixels @ inv_homography.T
+        board_pixels = board_pixels[:, :2] / board_pixels[:, 2:3]
+        inside = (
+            (board_pixels[:, 0] >= 0.0)
+            & (board_pixels[:, 0] <= board_image.shape[1] - 1.0)
+            & (board_pixels[:, 1] >= 0.0)
+            & (board_pixels[:, 1] <= board_image.shape[0] - 1.0)
+        )
+        if not np.any(inside):
+            continue
+        metric = np.zeros((inside.sum(), 3), dtype=np.float64)
+        metric[:, 0] = (
+            board_pixels[inside, 0]
+            / (board_image.shape[1] - 1.0)
+            * squares_x
+            * actual_square
+        )
+        metric[:, 1] = (
+            board_pixels[inside, 1]
+            / (board_image.shape[0] - 1.0)
+            * squares_y
+            * actual_square
+        )
+        camera_points = (rotation @ metric.T).T + tvec.reshape(3)
+        depth_m[y, xs[inside]] = camera_points[:, 2]
+    descriptor = CameraDescriptor(
+        name="scaled",
+        camera_type="realsense",
+        serial=None,
+        width=640,
+        height=480,
+        fps=30,
+        camera_matrix=camera_matrix.tolist(),
+        distortion=distortion.tolist(),
+    )
+    frame = CalibrationCameraFrame(
+        image_rgb=np.repeat(warped[:, :, None], 3, axis=2).astype(np.uint8),
+        depth_meters=depth_m,
+        descriptor=descriptor,
+        timestamp=123.0,
+        frame_number=456,
+    )
+    return cv2, detect_board, frame, tvec.reshape(3), actual_square / configured_square
+
+
 def test_detect_board_pose_reports_partial_charuco_when_depth_is_missing():
     cv2, board, frame = _synthetic_charuco_scene()
     frame = CalibrationCameraFrame(
@@ -484,6 +710,54 @@ def test_detect_board_pose_reports_partial_charuco_when_depth_is_missing():
     assert detection.charuco_corner_count >= 8
     assert detection.depth_valid_corners == 0
     assert detection.overlay_rgb.shape == frame.image_rgb.shape
+
+
+def test_detect_board_pose_accepts_image_pose_when_depth_kabsch_is_noisy():
+    cv2, board, frame = _perspective_charuco_scene()
+
+    detection = _detect_board_pose(
+        cv2,
+        board,
+        frame,
+        min_corners=8,
+        min_depth_corners=8,
+        depth_neighborhood=1,
+        max_kabsch_rms_m=0.005,
+    )
+
+    assert detection.accepted is True
+    assert detection.reason is None
+    assert detection.camera_from_board is not None
+    assert detection.kabsch_rms_m is not None
+    assert detection.kabsch_rms_m > 0.005
+    assert detection.reprojection_error is not None
+    assert detection.reprojection_error < 1.0
+
+
+def test_detect_board_pose_uses_depth_metric_scale_when_board_size_is_wrong():
+    cv2, board, frame, expected_translation, expected_scale = _scaled_metric_charuco_scene()
+
+    detection = _detect_board_pose(
+        cv2,
+        board,
+        frame,
+        min_corners=8,
+        min_depth_corners=8,
+        depth_neighborhood=1,
+        max_kabsch_rms_m=0.005,
+    )
+
+    assert detection.accepted is True
+    assert detection.camera_from_board is not None
+    assert np.allclose(
+        detection.camera_from_board[:3, 3],
+        expected_translation,
+        atol=0.025,
+    )
+    assert detection.depth_scale is not None
+    assert detection.depth_scale == pytest.approx(expected_scale, abs=0.03)
+    assert detection.depth_fit_rms_m is not None
+    assert detection.depth_fit_rms_m < 0.005
 
 
 def test_detect_board_pose_uses_class_based_aruco_api_when_legacy_functions_are_missing(monkeypatch):
@@ -548,7 +822,7 @@ def test_detect_board_pose_uses_depth_kabsch_to_recover_camera_from_board():
     )
 
 
-def test_detect_board_pose_rejects_high_depth_kabsch_rms():
+def test_detect_board_pose_reports_high_depth_kabsch_rms_without_rejecting_image_pose():
     cv2, board, frame = _synthetic_charuco_scene(depth=0.4)
     noisy_depth = frame.depth_meters.copy()
     noisy_depth[:200, :] = 0.6
@@ -570,7 +844,9 @@ def test_detect_board_pose_rejects_high_depth_kabsch_rms():
         max_kabsch_rms_m=0.001,
     )
 
-    assert detection.accepted is False
-    assert detection.reason == "kabsch_rms_too_high"
+    assert detection.accepted is True
+    assert detection.reason is None
     assert detection.kabsch_rms_m is not None
     assert detection.kabsch_rms_m > 0.001
+    assert detection.reprojection_error is not None
+    assert detection.reprojection_error < 1.0

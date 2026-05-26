@@ -95,7 +95,13 @@ export class StatusPanel {
       const rms = diagnostic.kabsch_rms_m === null || diagnostic.kabsch_rms_m === undefined
         ? 'none'
         : `${fmtNumber(diagnostic.kabsch_rms_m, 4)}m`;
-      return row(`${name} det`, `${state}, ${corners}/${depth}, ${rms}`, cls);
+      const fit = diagnostic.depth_fit_rms_m === null || diagnostic.depth_fit_rms_m === undefined
+        ? 'none'
+        : `${fmtNumber(diagnostic.depth_fit_rms_m, 4)}m`;
+      const scale = diagnostic.depth_scale === null || diagnostic.depth_scale === undefined
+        ? 'none'
+        : fmtNumber(diagnostic.depth_scale, 3);
+      return row(`${name} det`, `${state}, ${corners}/${depth}, ${rms}, fit ${fit}, s ${scale}`, cls);
     }).join('');
     const error = calibration.error || 'none';
     const sampleRejected = calibration.sample_rejected_reason || 'none';
