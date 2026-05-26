@@ -675,8 +675,13 @@ def _detect_board_pose(
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
     camera_matrix = np.asarray(descriptor.camera_matrix, dtype=np.float64)
     distortion = np.asarray(descriptor.distortion, dtype=np.float64)
-    dictionary = board.getDictionary() if hasattr(board, "getDictionary") else board.dictionary
-    marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(gray, dictionary)
+    marker_corners, marker_ids, charuco_corners, charuco_ids = _detect_charuco_corners(
+        cv2,
+        board,
+        gray,
+        camera_matrix,
+        distortion,
+    )
     overlay = image_rgb.copy()
     marker_count = 0 if marker_ids is None else int(len(marker_ids))
     if marker_ids is None or len(marker_ids) == 0:
@@ -689,14 +694,6 @@ def _detect_board_pose(
         )
 
     cv2.aruco.drawDetectedMarkers(overlay, marker_corners, marker_ids)
-    _, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-        marker_corners,
-        marker_ids,
-        gray,
-        board,
-        cameraMatrix=camera_matrix,
-        distCoeffs=distortion,
-    )
     charuco_count = 0 if charuco_ids is None else int(len(charuco_ids))
     if charuco_ids is not None and charuco_corners is not None and charuco_count > 0:
         cv2.aruco.drawDetectedCornersCharuco(overlay, charuco_corners, charuco_ids)
@@ -797,6 +794,42 @@ def _detect_board_pose(
         kabsch_rms_m=kabsch_rms,
         depth_range_m=depth_range,
         frame=frame,
+    )
+
+
+def _detect_charuco_corners(cv2, board, gray, camera_matrix, distortion):
+    if hasattr(cv2.aruco, "detectMarkers") and hasattr(
+        cv2.aruco,
+        "interpolateCornersCharuco",
+    ):
+        dictionary = (
+            board.getDictionary()
+            if hasattr(board, "getDictionary")
+            else board.dictionary
+        )
+        marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(gray, dictionary)
+        if marker_ids is None or len(marker_ids) == 0:
+            return marker_corners, marker_ids, None, None
+        _, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+            marker_corners,
+            marker_ids,
+            gray,
+            board,
+            cameraMatrix=camera_matrix,
+            distCoeffs=distortion,
+        )
+        return marker_corners, marker_ids, charuco_corners, charuco_ids
+
+    if hasattr(cv2.aruco, "CharucoDetector"):
+        detector = cv2.aruco.CharucoDetector(board)
+        charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(
+            gray,
+        )
+        return marker_corners, marker_ids, charuco_corners, charuco_ids
+
+    raise RuntimeError(
+        "OpenCV ArUco module lacks both legacy ChArUco functions and "
+        "cv2.aruco.CharucoDetector"
     )
 
 

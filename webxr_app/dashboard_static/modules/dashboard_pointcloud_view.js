@@ -27,10 +27,8 @@ export class DashboardPointCloudView {
     this._geom = geom;
     this._posAttr = geom.getAttribute('position');
     this._colAttr = geom.getAttribute('color');
-    // Wrapper group so we can apply a fixup rotation when parenting to a
-    // URDF link (the d405_depth_optical_frame chain in this URDF leaves
-    // the cloud rotated 180 deg around X compared to what librealsense
-    // emits -- flips Y and Z). The Points object itself stays untouched.
+    // Wrapper group lets us reparent the cloud without touching the Points
+    // object or its geometry buffers.
     this._wrapper = new THREE.Group();
     this._wrapper.add(this._points);
     this._parent = world;
@@ -57,8 +55,7 @@ export class DashboardPointCloudView {
       if (this._wrapper.parent) this._wrapper.parent.remove(this._wrapper);
       target.add(this._wrapper);
     }
-    // 180 deg about X when parented to a URDF link, identity otherwise.
-    this._wrapper.rotation.set(link ? Math.PI : 0, 0, 0);
+    this._wrapper.rotation.set(0, 0, 0);
   }
 
   ingest(arrayBuffer) {

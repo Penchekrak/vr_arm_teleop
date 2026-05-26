@@ -201,9 +201,29 @@ def test_canonical_urdf_resolves_world_to_d405_depth_optical_frame():
         "d405_depth_optical_frame",
         {f"joint{i}": 0.0 for i in range(6)},
     )
+    base_from_depth = tree.transform(
+        "world",
+        "d405_depth_frame",
+        {f"joint{i}": 0.0 for i in range(6)},
+    )
 
     assert base_from_camera.shape == (4, 4)
     assert np.all(np.isfinite(base_from_camera))
+    assert np.allclose(
+        base_from_camera[:3, 2],
+        base_from_depth[:3, 0],
+        atol=1e-6,
+    )
+    assert np.allclose(
+        base_from_camera[:3, 0],
+        -base_from_depth[:3, 1],
+        atol=1e-6,
+    )
+    assert np.allclose(
+        base_from_camera[:3, 1],
+        -base_from_depth[:3, 2],
+        atol=1e-6,
+    )
 
 
 def test_missing_camera_sdks_are_reported_only_when_feeds_start(monkeypatch):
@@ -464,6 +484,38 @@ def test_detect_board_pose_reports_partial_charuco_when_depth_is_missing():
     assert detection.charuco_corner_count >= 8
     assert detection.depth_valid_corners == 0
     assert detection.overlay_rgb.shape == frame.image_rgb.shape
+
+
+def test_detect_board_pose_uses_class_based_aruco_api_when_legacy_functions_are_missing(monkeypatch):
+    cv2, board, frame = _synthetic_charuco_scene(depth=0.4)
+    monkeypatch.delattr(cv2.aruco, "detectMarkers")
+    monkeypatch.delattr(cv2.aruco, "interpolateCornersCharuco")
+
+    detection = _detect_board_pose(
+        cv2,
+        board,
+        frame,
+        min_corners=8,
+        min_depth_corners=8,
+        depth_neighborhood=1,
+        max_kabsch_rms_m=0.005,
+    )
+
+    assert detection.accepted is True
+    assert detection.camera_from_board is not None
+    assert detection.depth_valid_corners >= 8
+    assert detection.kabsch_rms_m is not None
+    assert detection.kabsch_rms_m < 0.005
+    assert np.allclose(
+        detection.camera_from_board[:3, :3],
+        np.eye(3),
+        atol=0.03,
+    )
+    assert np.allclose(
+        detection.camera_from_board[:3, 3],
+        [0.0, 0.0, 0.4],
+        atol=0.015,
+    )
 
 
 def test_detect_board_pose_uses_depth_kabsch_to_recover_camera_from_board():
