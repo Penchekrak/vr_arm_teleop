@@ -22,8 +22,10 @@ const status = new StatusPanel(
   document.getElementById('connection'),
 );
 const comms = new DashboardComms('/ws');
+const finishCalibrationButton = document.getElementById('finish-calibration');
 
 let modelLoaded = false;
+let finishingCalibration = false;
 
 comms.onConnectionState = state => status.setConnectionState(state);
 comms.onJson = msg => {
@@ -52,6 +54,7 @@ comms.onJson = msg => {
   calibration.update(msg.calibration);
   calibrationDiagnostics.update(msg);
   status.update(msg);
+  updateFinishCalibrationButton(msg.calibration || null);
 };
 comms.onBinary = buf => cloud.ingest(buf);
 
@@ -67,3 +70,37 @@ bindToggle('toggle-cloud', cloud);
 bindToggle('toggle-workspace', workspace);
 bindToggle('toggle-xr', xr);
 bindToggle('toggle-calibration', calibration);
+
+function updateFinishCalibrationButton(calibrationState) {
+  if (!finishCalibrationButton) return;
+  if (!calibrationState) {
+    finishCalibrationButton.disabled = true;
+    finishCalibrationButton.textContent = 'Finish Calibration';
+    return;
+  }
+  const finished = !!calibrationState.finished;
+  finishCalibrationButton.disabled = finished || finishingCalibration;
+  finishCalibrationButton.textContent = finished
+    ? 'Calibration Finished'
+    : (finishingCalibration ? 'Finishing...' : 'Finish Calibration');
+}
+
+if (finishCalibrationButton) {
+  finishCalibrationButton.addEventListener('click', async () => {
+    if (finishCalibrationButton.disabled) return;
+    finishingCalibration = true;
+    updateFinishCalibrationButton({ finished: false });
+    try {
+      await comms.postJson('/api/calibration/finish');
+    } catch (err) {
+      console.error('[dashboard] finish calibration failed', err);
+      finishCalibrationButton.textContent = 'Finish Failed';
+      setTimeout(() => {
+        finishingCalibration = false;
+        updateFinishCalibrationButton({ finished: false });
+      }, 1200);
+      return;
+    }
+    finishingCalibration = false;
+  });
+}

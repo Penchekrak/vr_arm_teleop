@@ -101,6 +101,23 @@ input[type="checkbox"] {
   accent-color: #39a0d8;
 }
 
+button {
+  min-height: 34px;
+  border: 1px solid #376174;
+  border-radius: 6px;
+  background: #173342;
+  color: #edf2f5;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  border-color: #35434e;
+  background: #1a2025;
+  color: #7f8a92;
+  cursor: default;
+}
+
 #status {
   display: grid;
   gap: 12px;

@@ -49,6 +49,10 @@ from teleop_backends.pointcloud.hardware import (
     fuse_camera_frames,
     load_hardware_config,
 )
+from teleop_backends.pointcloud.live_alignment import (
+    LiveCorrectionConfig,
+    LiveCorrectionTracker,
+)
 from teleop_backends.robot.rc5_state import (
     RC5_ARM_JOINT_NAMES,
     RC5JointStateReader,
@@ -118,6 +122,7 @@ class CalibrationPointCloudSource:
         max_kabsch_rms_m: float,
         max_arm_motion_per_sample_m: float,
         autosave: bool,
+        live_correction_config: LiveCorrectionConfig | None = None,
         reader_factory=default_reader_factory,
     ) -> None:
         self._config_path = Path(config_path)
@@ -136,6 +141,8 @@ class CalibrationPointCloudSource:
         self._max_kabsch_rms_m = float(max_kabsch_rms_m)
         self._max_arm_motion_per_sample_m = float(max_arm_motion_per_sample_m)
         self._autosave = bool(autosave)
+        self._live_correction_config = live_correction_config or LiveCorrectionConfig()
+        self._live_correction = LiveCorrectionTracker(self._live_correction_config)
         self._reader_factory = reader_factory
         self._readers: list[tuple[HardwareCameraConfig, CameraPointCloudReader]] = []
         self._descriptors: dict[str, CameraDescriptor] = {}
@@ -152,6 +159,8 @@ class CalibrationPointCloudSource:
         self._autosave_state = "disabled" if not autosave else "waiting_for_stability"
         self._last_saved_timestamp: float | None = None
         self._saved_current_stable_set = False
+        self._finished = False
+        self._finished_target_transforms: dict[str, np.ndarray] = {}
 
     async def start(self) -> None:
         if self._readers:
@@ -243,15 +252,36 @@ class CalibrationPointCloudSource:
             self._latest_arm_motion_m,
             self._max_arm_motion_per_sample_m,
         )
-        if self._latest_sample_rejected_reason is None:
+        if not self._finished and self._latest_sample_rejected_reason is None:
             self._optimizer.add_frame(
                 world_from_anchor_camera=world_from_anchor,
                 detections=detections,
                 timestamp=time.monotonic(),
             )
-        self._maybe_autosave()
+        if not self._finished:
+            self._maybe_autosave()
 
         transforms = self._optimizer.current_transforms(include_anchor=True)
+        transforms[self._anchor.name] = world_from_anchor
+        raw_frames_by_name = {
+            camera.name: frame
+            for camera, frame in raw_frames
+        }
+        if self._finished:
+            transforms = {
+                **transforms,
+                **self._finished_target_transforms,
+            }
+        else:
+            transforms = _apply_live_fusion_corrections(
+                anchor_name=self._anchor.name,
+                target_names=self._optimizer.target_names,
+                transforms=transforms,
+                raw_frames_by_name=raw_frames_by_name,
+                detections=detections,
+                tracker=self._live_correction,
+                sample_rejected_reason=self._latest_sample_rejected_reason,
+            )
         self._latest_transforms = {
             name: transform.tolist()
             for name, transform in transforms.items()
@@ -310,8 +340,37 @@ class CalibrationPointCloudSource:
     def latest_calibration_jpeg(self, camera_name: str) -> bytes | None:
         return self._latest_calibration_jpegs.get(camera_name)
 
+    def finish_calibration(self) -> dict[str, object]:
+        if not self._latest_transforms:
+            return {
+                "finished": False,
+                "reason": "transforms_unavailable",
+            }
+        frozen = {
+            name: np.asarray(transform, dtype=np.float64).reshape(4, 4)
+            for name, transform in self._latest_transforms.items()
+            if name != self._anchor.name
+        }
+        if not frozen:
+            return {
+                "finished": False,
+                "reason": "target_transforms_unavailable",
+            }
+        self._finished_target_transforms = frozen
+        self._finished = True
+        self._autosave_state = "finished"
+        return {
+            "finished": True,
+            "frozen_camera_names": sorted(frozen),
+        }
+
     def calibration_snapshot(self) -> dict:
         status = self._optimizer.status()
+        if self._finished:
+            status = {
+                **status,
+                "mode": "normal_operation",
+            }
         cameras = [
             {
                 "name": camera.name,
@@ -332,6 +391,11 @@ class CalibrationPointCloudSource:
             "world_from_camera": self._latest_transforms,
             "world_from_board": self._latest_board_poses,
             "diagnostics": self._latest_diagnostics,
+            "finished": self._finished,
+            "live_correction": {
+                "enabled": self._live_correction_config.enabled,
+                "targets": self._live_correction.diagnostics(),
+            },
             "arm_motion_m": self._latest_arm_motion_m,
             "sample_rejected_reason": self._latest_sample_rejected_reason,
             "autosave": {
@@ -385,6 +449,61 @@ class CalibrationRobotAdapter:
         )
 
 
+def _apply_live_fusion_corrections(
+    *,
+    anchor_name: str,
+    target_names: tuple[str, ...],
+    transforms: dict[str, np.ndarray],
+    raw_frames_by_name: dict[str, PointCloudFrame],
+    detections: dict[str, CalibrationDetection],
+    tracker: LiveCorrectionTracker,
+    sample_rejected_reason: str | None,
+) -> dict[str, np.ndarray]:
+    corrected = {
+        name: np.asarray(transform, dtype=np.float64).reshape(4, 4)
+        for name, transform in transforms.items()
+    }
+    anchor_transform = corrected.get(anchor_name)
+    anchor_frame = raw_frames_by_name.get(anchor_name)
+    can_update = (
+        sample_rejected_reason is None
+        and anchor_transform is not None
+        and anchor_frame is not None
+        and anchor_name in detections
+    )
+    anchor_points = (
+        _transform_points(anchor_frame.points, anchor_transform)
+        if can_update and anchor_frame is not None and anchor_transform is not None
+        else None
+    )
+    for target_name in target_names:
+        base_transform = corrected.get(target_name)
+        if base_transform is None:
+            continue
+        target_frame = raw_frames_by_name.get(target_name)
+        if (
+            can_update
+            and anchor_points is not None
+            and target_frame is not None
+            and target_name in detections
+        ):
+            target_points = _transform_points(target_frame.points, base_transform)
+            tracker.update(target_name, anchor_points, target_points)
+        corrected[target_name] = tracker.corrected_transform(
+            target_name,
+            base_transform,
+        )
+    return corrected
+
+
+def _transform_points(points: np.ndarray, transform: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    transform = np.asarray(transform, dtype=np.float64).reshape(4, 4)
+    ones = np.ones((points.shape[0], 1), dtype=np.float64)
+    homogeneous = np.concatenate([points, ones], axis=1)
+    return (homogeneous @ transform.T)[:, :3]
+
+
 def _default_urdf() -> Path:
     return REPO_ROOT / "urdf_rc5_right_hand" / "urdf_with_simple_collisions.urdf"
 
@@ -436,6 +555,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=True,
         help="atomically autosave stable all-camera solutions",
     )
+    ap.add_argument(
+        "--live-fusion-correction",
+        dest="live_fusion_correction",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="apply bounded ChArUco-gated ICP correction to live fused clouds",
+    )
+    ap.add_argument("--live-correction-min-points", type=int, default=300)
+    ap.add_argument("--live-correction-max-translation", type=float, default=0.03)
+    ap.add_argument("--live-correction-max-rotation", type=float, default=3.0)
+    ap.add_argument("--live-correction-max-rmse", type=float, default=0.015)
+    ap.add_argument("--live-correction-max-correspondence", type=float, default=0.03)
+    ap.add_argument("--live-correction-smoothing", type=float, default=0.35)
     return ap.parse_args(argv)
 
 
@@ -501,6 +633,7 @@ async def run_continuous_calibration(args: argparse.Namespace) -> None:
         max_kabsch_rms_m=args.max_kabsch_rms,
         max_arm_motion_per_sample_m=args.max_arm_motion_per_sample,
         autosave=args.autosave,
+        live_correction_config=_make_live_correction_config(args),
     )
     workspace = _workspace_from_config(hardware_config)
     robot = CalibrationRobotAdapter(source)
@@ -547,6 +680,18 @@ def _make_joint_state_provider(args: argparse.Namespace) -> JointStateProvider:
     )
 
 
+def _make_live_correction_config(args: argparse.Namespace) -> LiveCorrectionConfig:
+    return LiveCorrectionConfig(
+        enabled=bool(args.live_fusion_correction),
+        min_points=int(args.live_correction_min_points),
+        max_correspondence_m=float(args.live_correction_max_correspondence),
+        max_translation_m=float(args.live_correction_max_translation),
+        max_rotation_deg=float(args.live_correction_max_rotation),
+        max_rmse_m=float(args.live_correction_max_rmse),
+        smoothing_alpha=float(args.live_correction_smoothing),
+    )
+
+
 def _workspace_from_config(config: HardwarePointCloudConfig) -> Workspace:
     if config.workspace_crop is not None:
         min_corner, max_corner = config.workspace_crop
@@ -572,6 +717,9 @@ def _make_dashboard_app(
 
     async def snapshot(_request) -> web.Response:
         return web.json_response(hub.snapshot())
+
+    async def finish_calibration(_request) -> web.Response:
+        return web.json_response(source.finish_calibration())
 
     async def camera_color(request) -> web.Response:
         image = source.latest_color_jpeg(request.match_info["name"])
@@ -653,6 +801,7 @@ def _make_dashboard_app(
 
     app.router.add_get("/ws", dashboard_ws)
     app.router.add_get("/api/snapshot", snapshot)
+    app.router.add_post("/api/calibration/finish", finish_calibration)
     app.router.add_get("/api/cameras/{name}/color.jpg", camera_color)
     app.router.add_get("/api/cameras/{name}/calibration.jpg", camera_calibration)
     app.router.add_get(

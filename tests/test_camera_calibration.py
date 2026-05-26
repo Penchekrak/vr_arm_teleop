@@ -2,11 +2,16 @@ import importlib
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from scripts.calibrate_two_cameras_charuco import _detect_board_pose
+from scripts.calibrate_two_cameras_charuco import (
+    CalibrationPointCloudSource,
+    _apply_live_fusion_corrections,
+    _detect_board_pose,
+)
 from teleop_backends.camera_calibration import (
     AnchoredExtrinsicOptimizer,
     CameraDescriptor,
@@ -27,6 +32,11 @@ from teleop_backends.camera_calibration import (
 )
 from teleop_backends.pointcloud.hardware import CalibrationCameraFrame
 from teleop_backends.pointcloud.hardware import load_hardware_config
+from teleop_core.point_cloud import PointCloudFrame
+from teleop_backends.pointcloud.live_alignment import (
+    LiveCorrectionConfig,
+    LiveCorrectionTracker,
+)
 
 
 def test_estimate_two_camera_extrinsics_chains_external_camera_to_world():
@@ -434,6 +444,97 @@ def test_write_calibrated_hardware_config_preserves_fields_and_creates_backup(tm
     assert written["cameras"][0]["world_from_camera"] == world_from_d405.tolist()
     assert written["cameras"][0]["extrinsic_world_from_cam"] == world_from_d405.tolist()
     assert written["cameras"][1] == original["cameras"][1]
+
+
+def _pointcloud(points):
+    return PointCloudFrame(
+        points=np.asarray(points, dtype=np.float32),
+        colors=np.zeros((len(points), 3), dtype=np.uint8),
+        timestamp=1.0,
+    )
+
+
+def test_apply_live_fusion_corrections_updates_target_transform_and_keeps_last_good():
+    anchor_points = np.asarray(
+        [
+            [x, y, z]
+            for x in np.linspace(-0.09, 0.09, 7)
+            for y in np.linspace(-0.06, 0.06, 5)
+            for z in np.linspace(0.32, 0.56, 4)
+        ],
+        dtype=np.float32,
+    )
+    offset = np.array([0.006, -0.004, 0.003], dtype=np.float32)
+    tracker = LiveCorrectionTracker(
+        LiveCorrectionConfig(
+            min_points=40,
+            max_points=500,
+            max_correspondence_m=0.02,
+            max_translation_m=0.03,
+            max_rotation_deg=2.0,
+            max_rmse_m=0.01,
+            iterations=6,
+            smoothing_alpha=1.0,
+        )
+    )
+    transforms = {
+        "d405": np.eye(4, dtype=np.float64),
+        "d435i": np.eye(4, dtype=np.float64),
+    }
+    detections = {
+        "d405": _detection(np.eye(4)),
+        "d435i": _detection(np.eye(4)),
+    }
+
+    corrected = _apply_live_fusion_corrections(
+        anchor_name="d405",
+        target_names=("d435i",),
+        transforms=transforms,
+        raw_frames_by_name={
+            "d405": _pointcloud(anchor_points),
+            "d435i": _pointcloud(anchor_points + offset),
+        },
+        detections=detections,
+        tracker=tracker,
+        sample_rejected_reason=None,
+    )
+    rejected = _apply_live_fusion_corrections(
+        anchor_name="d405",
+        target_names=("d435i",),
+        transforms=transforms,
+        raw_frames_by_name={
+            "d405": _pointcloud(anchor_points),
+            "d435i": _pointcloud(anchor_points + np.array([0.20, 0.0, 0.0])),
+        },
+        detections=detections,
+        tracker=tracker,
+        sample_rejected_reason=None,
+    )
+
+    assert np.allclose(corrected["d435i"][:3, 3], -offset, atol=0.002)
+    assert np.allclose(rejected["d435i"], corrected["d435i"], atol=0.002)
+    assert tracker.diagnostics()["d435i"]["accepted"] is False
+    assert tracker.diagnostics()["d435i"]["active"] is True
+
+
+def test_finish_calibration_freezes_latest_non_anchor_transforms():
+    source = object.__new__(CalibrationPointCloudSource)
+    source._anchor = SimpleNamespace(name="d405")
+    source._finished = False
+    source._finished_target_transforms = {}
+    source._latest_transforms = {
+        "d405": np.eye(4, dtype=np.float64).tolist(),
+        "d435i": transform_from_rt(np.eye(3), [0.1, 0.2, 0.3]).tolist(),
+    }
+
+    result = source.finish_calibration()
+
+    assert result["finished"] is True
+    assert source._finished is True
+    assert np.allclose(
+        source._finished_target_transforms["d435i"][:3, 3],
+        [0.1, 0.2, 0.3],
+    )
 
 
 def _synthetic_charuco_scene(*, depth: float = 0.4):

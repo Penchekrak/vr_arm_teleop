@@ -79,6 +79,7 @@ export class StatusPanel {
 
   _calibrationHtml(calibration) {
     const autosave = calibration.autosave || {};
+    const liveCorrection = calibration.live_correction || {};
     const targets = calibration.targets || {};
     const targetRows = Object.entries(targets).map(([name, target]) => {
       const stable = target.stable ? 'stable' : 'solving';
@@ -104,6 +105,18 @@ export class StatusPanel {
       return row(`${name} det`, `${state}, ${corners}/${depth}, ${rms}, fit ${fit}, s ${scale}`, cls);
     }).join('');
     const error = calibration.error || 'none';
+    const correctionRows = Object.entries(liveCorrection.targets || {}).map(([name, target]) => {
+      const active = target.active ? 'active' : 'inactive';
+      const accepted = target.accepted ? 'accepted' : (target.reason || 'rejected');
+      const rmse = target.rmse_m === null || target.rmse_m === undefined
+        ? 'none'
+        : `${fmtNumber(target.rmse_m, 4)}m`;
+      const trans = target.translation_m === null || target.translation_m === undefined
+        ? 'none'
+        : `${fmtNumber(target.translation_m, 4)}m`;
+      const cls = target.active ? '' : 'warn';
+      return row(`${name} live`, `${active}, ${accepted}, ${trans}, ${rmse}`, cls);
+    }).join('');
     const sampleRejected = calibration.sample_rejected_reason || 'none';
     const armMotion = calibration.arm_motion_m === null || calibration.arm_motion_m === undefined
       ? 'none'
@@ -111,12 +124,15 @@ export class StatusPanel {
     return `
       <div class="status-group">
         ${row('Cal mode', calibration.mode || 'none')}
+        ${row('Finished', calibration.finished ? 'yes' : 'no', calibration.finished ? '' : 'warn')}
+        ${row('Live ICP', liveCorrection.enabled ? 'on' : 'off', liveCorrection.enabled ? '' : 'warn')}
         ${row('Anchor', calibration.anchor_camera || 'none')}
         ${row('Autosave', autosave.state || 'none', autosave.state === 'saved' ? '' : 'warn')}
         ${row('All stable', calibration.all_stable ? 'yes' : 'no', calibration.all_stable ? '' : 'warn')}
         ${row('Arm motion', armMotion, calibration.sample_rejected_reason ? 'warn' : '')}
         ${row('Sample gate', sampleRejected, calibration.sample_rejected_reason ? 'warn' : '')}
         ${targetRows}
+        ${correctionRows}
         ${diagnosticRows}
         ${row('Cal error', error, calibration.error ? 'error' : '')}
       </div>

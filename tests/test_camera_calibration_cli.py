@@ -44,6 +44,17 @@ def test_calibration_cli_parses_config_driven_options():
             "2",
             "--max-arm-motion-per-sample",
             "0.004",
+            "--no-live-fusion-correction",
+            "--live-correction-max-translation",
+            "0.012",
+            "--live-correction-max-rotation",
+            "0.8",
+            "--live-correction-max-rmse",
+            "0.006",
+            "--live-correction-min-points",
+            "250",
+            "--live-correction-smoothing",
+            "0.6",
             "--no-autosave",
         ]
     )
@@ -62,6 +73,12 @@ def test_calibration_cli_parses_config_driven_options():
     assert args.max_kabsch_rms == 0.006
     assert args.depth_neighborhood == 2
     assert args.max_arm_motion_per_sample == 0.004
+    assert args.live_fusion_correction is False
+    assert args.live_correction_max_translation == 0.012
+    assert args.live_correction_max_rotation == 0.8
+    assert args.live_correction_max_rmse == 0.006
+    assert args.live_correction_min_points == 250
+    assert args.live_correction_smoothing == 0.6
     assert args.autosave is False
 
 
@@ -95,6 +112,12 @@ def test_calibration_cli_defaults_to_canonical_urdf_camera_chain():
     assert args.anchor_camera is None
     assert args.dashboard_port == 8001
     assert args.autosave is True
+    assert args.live_fusion_correction is True
+    assert args.live_correction_max_translation == 0.03
+    assert args.live_correction_max_rotation == 3.0
+    assert args.live_correction_max_rmse == 0.015
+    assert args.live_correction_min_points == 300
+    assert args.live_correction_smoothing == 0.35
     assert args.arm_ip == "10.10.10.20"
     assert args.rc5_api_path == Path("/opt/rc5_python_api")
 

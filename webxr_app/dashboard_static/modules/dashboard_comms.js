@@ -65,4 +65,24 @@ export class DashboardComms {
       this._ws = null;
     }
   }
+
+  async postJson(path) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json' },
+    });
+    const text = await res.text();
+    let body = {};
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch (err) {
+        throw new Error(`bad JSON response from ${path}: ${text}`);
+      }
+    }
+    if (!res.ok) {
+      throw new Error(body.reason || body.error || `${res.status} ${res.statusText}`);
+    }
+    return body;
+  }
 }
