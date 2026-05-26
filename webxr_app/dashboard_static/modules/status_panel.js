@@ -52,7 +52,9 @@ export class StatusPanel {
     const calibrationHtml = calibration ? this._calibrationHtml(calibration) : '';
     this._status.innerHTML = `
       <div class="status-group">
-        ${row('URDF', model.urdf_url || 'none')}
+        ${row('URDF URL', model.urdf_url || 'none')}
+        ${row('URDF source', model.urdf_path || 'none')}
+        ${row('Cloud frame', model.pointcloud_frame || 'camera-link')}
         ${row('Camera feeds', cameraFeedCount)}
         ${row('Robot joints', jointCount)}
         ${row('Robot Hz', fmtNumber(status.robot_hz, 1))}

@@ -508,6 +508,7 @@ async def run_continuous_calibration(args: argparse.Namespace) -> None:
         workspace=workspace,
         urdf_url="/robot/robot.urdf",
         urdf_assets_url="/robot/assets/",
+        urdf_path=str(args.urdf.resolve()),
         calibration_snapshot_provider=source.calibration_snapshot,
     )
 

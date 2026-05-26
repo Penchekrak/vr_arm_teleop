@@ -103,6 +103,11 @@ class TeleopServer:
             workspace=self._workspace,
             urdf_url="/robot/robot.urdf",
             urdf_assets_url="/robot/assets/",
+            urdf_path=(
+                None
+                if self._config.urdf_path is None
+                else str(Path(self._config.urdf_path).resolve())
+            ),
             pointcloud_hz=self._config.pointcloud_hz,
             robot_hz=self._config.dashboard_robot_hz,
             status_hz=self._config.dashboard_status_hz,

@@ -83,6 +83,7 @@ class TelemetryHub:
         workspace: Workspace,
         urdf_url: str,
         urdf_assets_url: str,
+        urdf_path: str | None = None,
         pointcloud_hz: float = 15.0,
         robot_hz: float = 30.0,
         status_hz: float = 1.0,
@@ -93,6 +94,7 @@ class TelemetryHub:
         self._workspace = workspace
         self._urdf_url = urdf_url
         self._urdf_assets_url = urdf_assets_url
+        self._urdf_path = urdf_path
         self._pointcloud_hz = float(pointcloud_hz)
         self._robot_hz = float(robot_hz)
         self._status_hz = float(status_hz)
@@ -231,6 +233,8 @@ class TelemetryHub:
             "urdf_assets_url": self._urdf_assets_url,
             "camera_feeds": _dashboard_camera_feeds(self._pc),
         }
+        if self._urdf_path is not None:
+            model["urdf_path"] = self._urdf_path
         pointcloud_frame = _dashboard_pointcloud_frame(self._pc)
         if pointcloud_frame is not None:
             model["pointcloud_frame"] = pointcloud_frame

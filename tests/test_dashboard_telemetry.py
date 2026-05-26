@@ -99,6 +99,7 @@ def test_dashboard_snapshot_contains_model_workspace_robot_and_unaligned_xr():
             workspace=_workspace(),
             urdf_url="/robot/robot.urdf",
             urdf_assets_url="/robot/assets/",
+            urdf_path="/tmp/source.urdf",
             pointcloud_hz=1000.0,
             robot_hz=1000.0,
             status_hz=1000.0,
@@ -110,6 +111,7 @@ def test_dashboard_snapshot_contains_model_workspace_robot_and_unaligned_xr():
         assert snap["type"] == "snapshot"
         assert snap["model"]["urdf_url"] == "/robot/robot.urdf"
         assert snap["model"]["urdf_assets_url"] == "/robot/assets/"
+        assert snap["model"]["urdf_path"] == "/tmp/source.urdf"
         assert snap["model"]["camera_feeds"] == [
             {
                 "name": "d405",

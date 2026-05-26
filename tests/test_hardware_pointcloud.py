@@ -147,6 +147,7 @@ def test_hardware_source_exposes_dashboard_camera_feed_metadata_and_jpeg(tmp_pat
                     "height": 240,
                 }
             ]
+            assert source.dashboard_pointcloud_frame() == "world"
             assert source.latest_color_jpeg("d405") == b"jpeg-bytes"
         finally:
             await source.stop()

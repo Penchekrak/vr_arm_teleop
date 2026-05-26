@@ -332,6 +332,9 @@ class HardwarePointCloudSource(PointCloudSource):
             })
         return feeds
 
+    def dashboard_pointcloud_frame(self) -> str:
+        return "world"
+
     def latest_color_jpeg(self, camera_name: str) -> bytes | None:
         for camera, reader in self._readers:
             if camera.name == camera_name:
