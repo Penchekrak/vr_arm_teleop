@@ -123,8 +123,9 @@ class CubeDetectionConfig:
     nms_distance_ratio: float = 0.7
     max_cubes: int = 24
     max_stable_points: int = 6000
-    max_fit_clusters: int = 64
-    max_fit_points_per_cluster: int = 1200
+    max_fit_clusters: int = 24
+    max_fit_points_per_cluster: int = 500
+    fit_max_nfev: int = 50
 
 
 class CubeDetector:
@@ -324,8 +325,6 @@ class CubeDetector:
         edge_seeds = _unique_floats([
             edge0,
             cfg.edge_m,
-            edge_min_m,
-            edge_max_m,
         ])
         best = None
 
@@ -352,7 +351,7 @@ class CubeDetector:
                     ),
                     loss="huber",
                     f_scale=0.003,
-                    max_nfev=80,
+                    max_nfev=max(10, int(cfg.fit_max_nfev)),
                 )
                 err = float(np.mean(np.abs(residuals(sol.x)))) if len(points) else math.inf
                 if best is None or err < best[0]:

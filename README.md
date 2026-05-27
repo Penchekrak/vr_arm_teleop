@@ -118,7 +118,8 @@ Primary motion flow:
 
 1. Click **Adjust Workspace** to translate, rotate, or resize the
    oriented gripper box with Three.js transform controls; click **Save**
-   to replace the runtime safety workspace.
+   to replace the runtime safety workspace and rewrite the active
+   workspace JSON (`--workspace path.json` or `config/workspace.json`).
 2. Click **Enable Control**. This disables VR trigger-commanded motion.
 3. Click a detected cube, then **Simulate Grasp**. The server creates an
    Aero thumb/index pinch plan, validates every wrist target against the
@@ -166,7 +167,7 @@ is enabled.
 | `--pybullet-gui` | off | Show pybullet GUI window |
 | `--home-joints` | derived | 6 comma-separated radians, e.g. `0,-2.0,1.8,-1.4,1.57,0` |
 | `--cameras` | – | camera config JSON for `--pc-backend hardware` or `realsense` |
-| `--workspace` | derived from home | Workspace JSON; supports legacy `{"min":[...],"max":[...]}` or oriented `{"center":[...],"half_extents":[...],"orientation":[x,y,z,w]}` |
+| `--workspace` | `config/workspace.json` if present, otherwise derived from home | Workspace JSON; supports legacy `{"min":[...],"max":[...]}` or oriented `{"center":[...],"half_extents":[...],"orientation":[x,y,z,w]}` |
 | `--port` | `8000` | HTTP/HTTPS port |
 | `--dashboard-port` | `8001` | Desktop control dashboard port |
 | `--cert` / `--key` | – | TLS cert + key (required for non-localhost Quest) |

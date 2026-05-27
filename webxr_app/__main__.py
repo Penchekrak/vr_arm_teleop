@@ -43,6 +43,11 @@ def _default_floating_urdf() -> Path:
     )
 
 
+DEFAULT_WORKSPACE_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "workspace.json"
+)
+
+
 def _make_pc_source(name: str, args: argparse.Namespace):
     """Resolve --pc-backend into a PointCloudSource instance."""
     if name == "mock":
@@ -111,6 +116,9 @@ def _make_workspace(args: argparse.Namespace, home: Pose | None) -> Workspace:
     arm starts but not above it or below the robot base."""
     if args.workspace is not None:
         data = json.loads(args.workspace.read_text())
+        return Workspace.from_dict(data)
+    if DEFAULT_WORKSPACE_PATH.exists():
+        data = json.loads(DEFAULT_WORKSPACE_PATH.read_text())
         return Workspace.from_dict(data)
     if home is not None:
         hx, hy, hz = (float(v) for v in home.position)
@@ -200,6 +208,7 @@ async def main() -> None:
             dashboard_port=args.dashboard_port,
             cert=args.cert,
             key=args.key,
+            workspace_path=args.workspace or DEFAULT_WORKSPACE_PATH,
             urdf_path=urdf_for_dashboard,
             robot_assets_root=urdf_for_dashboard.parent,
         ),

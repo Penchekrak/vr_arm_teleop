@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import numpy as np
@@ -12,6 +13,7 @@ from teleop_core.dashboard_control import (
     PlanSimulationStep,
 )
 from teleop_core.robot import RobotCommand, RobotState
+from teleop_core.server import ServerConfig, TeleopServer
 from teleop_core.types import Pose
 from teleop_core.workspace import Workspace
 
@@ -46,6 +48,12 @@ class RecordingRobot:
     def __init__(self):
         self.sent = []
 
+    async def start(self):
+        pass
+
+    async def stop(self):
+        pass
+
     async def send(self, cmd):
         self.sent.append(cmd)
 
@@ -56,6 +64,21 @@ class RecordingRobot:
             finger_curls=np.zeros(5, dtype=np.float32),
             timestamp=time.monotonic(),
         )
+
+    @property
+    def home_pose(self):
+        return _pose(0.1, 0.0, 0.2)
+
+
+class EmptyPointCloud:
+    async def start(self):
+        pass
+
+    async def stop(self):
+        pass
+
+    async def grab(self):
+        return None
 
 
 class FakePlan:
@@ -202,3 +225,31 @@ def test_workspace_update_clears_pending_plan_and_replaces_runtime_workspace():
         assert service.snapshot()["pending_plan"] is None
 
     asyncio.run(run())
+
+
+def test_dashboard_workspace_update_persists_configured_workspace_file(tmp_path):
+    workspace_path = tmp_path / "workspace.json"
+    workspace_path.write_text(json.dumps(_workspace().as_dict()))
+    server = TeleopServer(
+        point_cloud_source=EmptyPointCloud(),
+        robot_driver=RecordingRobot(),
+        workspace=Workspace.from_dict(json.loads(workspace_path.read_text())),
+        config=ServerConfig(workspace_path=workspace_path),
+    )
+
+    async def run():
+        await server._dashboard_control.update_workspace({
+            "center": [0.25, 0.05, 0.2],
+            "half_extents": [0.2, 0.15, 0.1],
+            "orientation": [0.0, 0.0, 0.0, 1.0],
+            "frame": "world",
+        })
+
+    asyncio.run(run())
+
+    written = json.loads(workspace_path.read_text())
+    assert written["center"] == pytest.approx([0.25, 0.05, 0.2])
+    assert written["half_extents"] == pytest.approx([0.2, 0.15, 0.1])
+    assert written["orientation"] == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert written["min"] == pytest.approx([0.05, -0.1, 0.1])
+    assert written["max"] == pytest.approx([0.45, 0.2, 0.3])

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import ssl
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,7 @@ class ServerConfig:
     )
     cert: Path | None = None
     key: Path | None = None
+    workspace_path: Path | None = None
     urdf_path: Path | None = None
     robot_assets_root: Path | None = None
     command_hz: float = 50.0
@@ -653,10 +655,20 @@ class TeleopServer:
     def _fault(self, reason: str) -> None: raise NotImplementedError
 
     def _set_workspace(self, workspace: Workspace) -> None:
+        self._persist_workspace(workspace)
         self._workspace = workspace
         self._tracker.disengage()
         self._tracker.set_workspace(workspace)
         self._telemetry.set_workspace(workspace)
+
+    def _persist_workspace(self, workspace: Workspace) -> None:
+        path = self._config.workspace_path
+        if path is None:
+            return
+        path = Path(path)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(workspace.as_dict(), indent=2) + "\n")
+        os.replace(tmp, path)
 
 
 async def _read_json_body(request) -> dict:

@@ -93,7 +93,7 @@ class TelemetryHub:
         calibration_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
         control_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
         cube_detector: CubeDetector | None = None,
-        cube_detection_timeout_s: float = 0.25,
+        cube_detection_timeout_s: float = 2.0,
     ) -> None:
         self._pc = point_cloud_source
         self._robot = robot_driver
@@ -242,13 +242,15 @@ class TelemetryHub:
                 timeout_s=self._cube_detection_timeout_s,
             )
             try:
-                await future
+                result = await future
             except Exception as exc:
                 self._cube_detection = self._cube_error_result(
                     "cube_detection_error",
                     timestamp=timestamp,
                     reason=repr(exc),
                 )
+                return
+            self._cube_detection = result
             return
         except Exception as exc:
             self._cube_detection = self._cube_error_result(

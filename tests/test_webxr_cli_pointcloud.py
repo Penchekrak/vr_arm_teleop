@@ -59,6 +59,25 @@ def test_server_config_has_dashboard_port_default():
     assert config.dashboard_port == 8001
 
 
+def test_make_workspace_reads_default_config_workspace_when_no_flag(monkeypatch, tmp_path):
+    import webxr_app.__main__ as main
+
+    workspace_path = tmp_path / "workspace.json"
+    workspace_path.write_text(json.dumps({
+        "center": [0.35, 0.05, 0.225],
+        "half_extents": [0.25, 0.3, 0.225],
+        "orientation": [0.0, 0.0, 0.0, 1.0],
+        "frame": "world",
+    }))
+    monkeypatch.setattr(main, "DEFAULT_WORKSPACE_PATH", workspace_path)
+    args = argparse.Namespace(workspace=None)
+
+    workspace = main._make_workspace(args, home=None)
+
+    assert workspace.center == pytest.approx([0.35, 0.05, 0.225])
+    assert workspace.half_extents == pytest.approx([0.25, 0.3, 0.225])
+
+
 def test_parse_args_accepts_dashboard_port(monkeypatch):
     from webxr_app.__main__ import _parse_args
 

@@ -123,6 +123,28 @@ async def _wait_for_cube_snapshot(hub, *, count, timeout_s=1.0):
     return snap
 
 
+async def _wait_for_cube_error(hub, error, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    snap = hub.snapshot()
+    while time.monotonic() < deadline:
+        snap = hub.snapshot()
+        if snap["cubes"]["error"] == error:
+            return snap
+        await asyncio.sleep(0.01)
+    return snap
+
+
+async def _wait_for_cube_sequence(hub, sequence, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    snap = hub.snapshot()
+    while time.monotonic() < deadline:
+        snap = hub.snapshot()
+        if snap["cubes"]["sequence"] == sequence:
+            return snap
+        await asyncio.sleep(0.01)
+    return snap
+
+
 def test_dashboard_snapshot_contains_model_workspace_robot_and_unaligned_xr():
     async def run():
         hub = TelemetryHub(
@@ -319,9 +341,37 @@ def test_pointcloud_sampling_publishes_without_waiting_for_slow_cube_detection()
     asyncio.run(run())
 
 
-def test_slow_cube_detection_times_out_without_blocking_future_pointclouds():
+def test_default_cube_detection_watchdog_allows_slow_but_finite_detection():
     async def run():
-        detector = SlowCubeDetector(delay_s=0.12)
+        detector = SlowCubeDetector(delay_s=0.35)
+        hub = TelemetryHub(
+            point_cloud_source=CountingPointCloud(),
+            robot_driver=FakeRobot(),
+            workspace=_workspace(),
+            urdf_url="/robot/robot.urdf",
+            urdf_assets_url="/robot/assets/",
+            cube_detector=detector,
+        )
+
+        await hub.sample_pointcloud_once()
+        await asyncio.sleep(0.30)
+        slow_snapshot = hub.snapshot()
+
+        assert slow_snapshot["cubes"]["error"] is None
+
+        await asyncio.sleep(0.10)
+        finished_snapshot = hub.snapshot()
+        assert finished_snapshot["cubes"]["sequence"] == 1
+
+        await hub.stop()
+
+    asyncio.run(run())
+
+
+def test_timed_out_cube_detection_result_is_published_if_worker_finishes_later():
+    async def run():
+        result = CubeDetectionResult(sequence=12, timestamp=234.0)
+        detector = SlowCubeDetector(delay_s=0.20, result=result)
         hub = TelemetryHub(
             point_cloud_source=CountingPointCloud(),
             robot_driver=FakeRobot(),
@@ -333,9 +383,45 @@ def test_slow_cube_detection_times_out_without_blocking_future_pointclouds():
         )
 
         await hub.sample_pointcloud_once()
-        await asyncio.sleep(0.03)
+        timeout_snapshot = await _wait_for_cube_error(
+            hub,
+            "cube_detection_timeout",
+            timeout_s=0.12,
+        )
+        assert timeout_snapshot["cubes"]["error"] == "cube_detection_timeout"
 
-        timeout_snapshot = hub.snapshot()
+        finished_snapshot = await _wait_for_cube_sequence(
+            hub,
+            12,
+            timeout_s=1.0,
+        )
+        assert finished_snapshot["cubes"]["error"] is None
+        assert finished_snapshot["cubes"]["sequence"] == 12
+
+        await hub.stop()
+
+    asyncio.run(run())
+
+
+def test_slow_cube_detection_times_out_without_blocking_future_pointclouds():
+    async def run():
+        detector = SlowCubeDetector(delay_s=0.20)
+        hub = TelemetryHub(
+            point_cloud_source=CountingPointCloud(),
+            robot_driver=FakeRobot(),
+            workspace=_workspace(),
+            urdf_url="/robot/robot.urdf",
+            urdf_assets_url="/robot/assets/",
+            cube_detector=detector,
+            cube_detection_timeout_s=0.01,
+        )
+
+        await hub.sample_pointcloud_once()
+        timeout_snapshot = await _wait_for_cube_error(
+            hub,
+            "cube_detection_timeout",
+            timeout_s=0.12,
+        )
         assert timeout_snapshot["cubes"]["error"] == "cube_detection_timeout"
 
         start = time.monotonic()
