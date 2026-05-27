@@ -182,6 +182,10 @@ Each camera entry includes `type` (`realsense` or `zed2i`),
 `serial`, stream settings, `z_min` / `z_max`, `downsample`,
 `calibrated`, and a 4x4 `world_from_camera` matrix. Disabled cameras
 are ignored.
+For RealSense calibration, keep both depth `width` / `height` and
+`color_width` / `color_height` at least `640x480`. The reader queries
+each camera's SDK profile list by serial and uses the nearest supported
+profile when the exact target is unavailable.
 
 If any enabled camera has `calibrated: false`, the backend still opens
 the cameras for diagnostics but returns no point-cloud frames to the AR

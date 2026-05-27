@@ -24,6 +24,8 @@ from teleop_backends.camera_calibration import CameraDescriptor
 
 
 SUPPORTED_CAMERA_TYPES = {"realsense", "zed2i"}
+DEFAULT_REALSENSE_WIDTH = 640
+DEFAULT_REALSENSE_HEIGHT = 480
 
 
 @dataclass(frozen=True)
@@ -36,8 +38,8 @@ class HardwareCameraConfig:
     world_from_camera: np.ndarray
     calibrated: bool
     urdf_link: str | None = None
-    width: int = 424
-    height: int = 240
+    width: int = DEFAULT_REALSENSE_WIDTH
+    height: int = DEFAULT_REALSENSE_HEIGHT
     fps: int = 30
     color_width: int | None = None
     color_height: int | None = None
@@ -203,8 +205,8 @@ def _parse_camera(raw: dict, index: int) -> HardwareCameraConfig:
         urdf_link=(
             None if raw.get("urdf_link") is None else str(raw.get("urdf_link"))
         ),
-        width=int(raw.get("width", 424)),
-        height=int(raw.get("height", 240)),
+        width=int(raw.get("width", DEFAULT_REALSENSE_WIDTH)),
+        height=int(raw.get("height", DEFAULT_REALSENSE_HEIGHT)),
         fps=int(raw.get("fps", 30)),
         color_width=None if color_width is None else int(color_width),
         color_height=None if color_height is None else int(color_height),
@@ -611,6 +613,12 @@ def _choose_realsense_color_profile(
     ]
     explicit = requested.width > 0 or requested.height > 0 or requested.fps > 0
     if explicit:
+        preferred_fps = requested.fps or fallback_fps
+        requested_area = (
+            requested.width * requested.height
+            if requested.width > 0 and requested.height > 0
+            else target_area
+        )
         matches = [
             profile
             for profile in candidates
@@ -621,20 +629,28 @@ def _choose_realsense_color_profile(
         if matches:
             return _sort_realsense_profiles(
                 matches,
-                preferred_fps=fallback_fps,
-                target_area=target_area,
+                preferred_fps=preferred_fps,
+                target_area=requested_area,
                 prefer_at_least_target=True,
             )[0]
-        supported = _format_realsense_profiles(candidates)
-        requested_text = (
+        if not candidates:
+            raise RuntimeError(
+                f"RealSense camera {camera.name!r} serial {camera.serial!r} exposes no RGB8 "
+                "color video profiles"
+            )
+        chosen = _sort_realsense_profiles(
+            candidates,
+            preferred_fps=preferred_fps,
+            target_area=requested_area,
+            prefer_at_least_target=True,
+        )[0]
+        print(
+            f"[pointcloud] RealSense {camera.name} requested color "
             f"{requested.width or '*'}x{requested.height or '*'}@"
-            f"{requested.fps or '*'}"
+            f"{requested.fps or '*'} is unsupported; "
+            f"using {chosen.width}x{chosen.height}@{chosen.fps}"
         )
-        raise RuntimeError(
-            f"RealSense camera {camera.name!r} serial {camera.serial!r} does not support "
-            f"requested color profile {requested_text}; "
-            f"supported color profiles: {supported}"
-        )
+        return chosen
     if not candidates:
         raise RuntimeError(
             f"RealSense camera {camera.name!r} serial {camera.serial!r} exposes no RGB8 "

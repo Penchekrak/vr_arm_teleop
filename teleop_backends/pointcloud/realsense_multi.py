@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 
 from .hardware import (
+    DEFAULT_REALSENSE_HEIGHT,
+    DEFAULT_REALSENSE_WIDTH,
     HardwarePointCloudConfig,
     HardwarePointCloudSource,
     ReaderFactory,
@@ -26,8 +28,8 @@ class CameraConfig:
 
     serial: str
     extrinsic_world_from_cam: np.ndarray
-    width: int = 424
-    height: int = 240
+    width: int = DEFAULT_REALSENSE_WIDTH
+    height: int = DEFAULT_REALSENSE_HEIGHT
     fps: int = 30
 
 

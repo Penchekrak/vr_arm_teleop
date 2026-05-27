@@ -104,7 +104,7 @@ def test_load_hardware_config_accepts_calibration_extrinsic_alias(tmp_path):
     assert np.allclose(config.cameras[0].world_from_camera[:3, 3], [0.1, 0.2, 0.3])
 
 
-def test_load_hardware_config_defaults_realsense_to_low_bandwidth_resolution(tmp_path):
+def test_load_hardware_config_defaults_realsense_to_calibration_resolution(tmp_path):
     raw_camera = _base_camera("rs-front", "realsense")
     raw_camera.pop("width")
     raw_camera.pop("height")
@@ -112,8 +112,8 @@ def test_load_hardware_config_defaults_realsense_to_low_bandwidth_resolution(tmp
 
     config = load_hardware_config(path)
 
-    assert config.cameras[0].width == 424
-    assert config.cameras[0].height == 240
+    assert config.cameras[0].width == 640
+    assert config.cameras[0].height == 480
 
 
 def test_realsense_reader_uses_separate_depth_and_color_stream_profiles(tmp_path):
@@ -315,6 +315,122 @@ def test_realsense_reader_selects_profiles_for_requested_serial(tmp_path):
     assert stream_calls == [
         ("depth", 480, 270, "z16", 30),
         ("color", 480, 270, "rgb8", 30),
+    ]
+
+
+def test_realsense_reader_falls_back_to_device_supported_color_profile(tmp_path):
+    raw_camera = _base_camera("d435i", "realsense")
+    raw_camera["serial"] = "d435i-serial"
+    raw_camera["width"] = 640
+    raw_camera["height"] = 480
+    raw_camera["fps"] = 30
+    raw_camera["color_width"] = 640
+    raw_camera["color_height"] = 480
+    raw_camera["color_fps"] = 30
+    camera = load_hardware_config(
+        _write_config(tmp_path, {"cameras": [raw_camera]})
+    ).cameras[0]
+    stream_calls = []
+
+    class FakeVideoProfile:
+        def __init__(self, stream, fmt, width, height, fps):
+            self._stream = stream
+            self._format = fmt
+            self._width = width
+            self._height = height
+            self._fps = fps
+
+        def stream_type(self):
+            return self._stream
+
+        def format(self):
+            return self._format
+
+        def fps(self):
+            return self._fps
+
+        def as_video_stream_profile(self):
+            return self
+
+        def width(self):
+            return self._width
+
+        def height(self):
+            return self._height
+
+    class FakeSensor:
+        def get_stream_profiles(self):
+            return [
+                FakeVideoProfile("depth", "z16", 848, 480, 30),
+                FakeVideoProfile("color", "rgb8", 1280, 720, 30),
+            ]
+
+    class FakeDevice:
+        def get_info(self, _info):
+            return "d435i-serial"
+
+        def query_sensors(self):
+            return [FakeSensor()]
+
+    class FakeContext:
+        def query_devices(self):
+            return [FakeDevice()]
+
+    class FakeConfig:
+        def enable_device(self, _serial):
+            pass
+
+        def enable_stream(self, *args):
+            stream_calls.append(args)
+
+    class FakePipeline:
+        def start(self, _config):
+            return FakeProfile()
+
+    class FakeProfile:
+        def get_device(self):
+            return self
+
+        def first_depth_sensor(self):
+            return self
+
+        def get_depth_scale(self):
+            return 0.001
+
+    class FakeRs:
+        class camera_info:
+            serial_number = "serial_number"
+
+        class stream:
+            depth = "depth"
+            color = "color"
+
+        class format:
+            z16 = "z16"
+            rgb8 = "rgb8"
+
+        def context(self):
+            return FakeContext()
+
+        def pipeline(self):
+            return FakePipeline()
+
+        def config(self):
+            return FakeConfig()
+
+        def align(self, _stream):
+            return None
+
+        def pointcloud(self):
+            return object()
+
+    reader = RealSensePointCloudReader(camera)
+
+    reader._start_blocking(FakeRs())
+
+    assert stream_calls == [
+        ("depth", 848, 480, "z16", 30),
+        ("color", 1280, 720, "rgb8", 30),
     ]
 
 
