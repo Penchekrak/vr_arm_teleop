@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .cube_detection import CubeDetectionResult, CubeDetector
 from .point_cloud import PointCloudSource, encode_frame
 from .robot import RobotDriver, RobotState
 from .workspace import Workspace
@@ -89,6 +90,8 @@ class TelemetryHub:
         robot_hz: float = 30.0,
         status_hz: float = 1.0,
         calibration_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
+        control_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
+        cube_detector: CubeDetector | None = None,
     ) -> None:
         self._pc = point_cloud_source
         self._robot = robot_driver
@@ -100,6 +103,9 @@ class TelemetryHub:
         self._robot_hz = float(robot_hz)
         self._status_hz = float(status_hz)
         self._calibration_snapshot_provider = calibration_snapshot_provider
+        self._control_snapshot_provider = control_snapshot_provider
+        self._cube_detector = cube_detector if cube_detector is not None else CubeDetector()
+        self._cube_detection: CubeDetectionResult = self._cube_detector.last_result
         self._robot_state: RobotState | None = None
         self._robot_error: str | None = None
         self._pointcloud: EncodedPointCloud | None = None
@@ -148,6 +154,7 @@ class TelemetryHub:
             self._pointcloud_error = repr(exc)
         if frame is None:
             return
+        self._sample_cubes(frame)
         payload = encode_frame(frame)
         async with self._cloud_condition:
             self._pointcloud_sequence += 1
@@ -158,6 +165,33 @@ class TelemetryHub:
                 n_points=int(frame.n_points),
             )
             self._cloud_condition.notify_all()
+
+    @property
+    def latest_cube_detection(self) -> CubeDetectionResult:
+        return self._cube_detection
+
+    def set_workspace(self, workspace: Workspace) -> None:
+        self._workspace = workspace
+
+    def set_control_snapshot_provider(
+        self,
+        provider: Callable[[], dict[str, Any]] | None,
+    ) -> None:
+        self._control_snapshot_provider = provider
+
+    def _sample_cubes(self, display_frame) -> None:
+        reference_frame = display_frame
+        reference_getter = getattr(self._pc, "latest_cube_reference_frame", None)
+        if callable(reference_getter):
+            reference_frame = reference_getter()
+        try:
+            self._cube_detection = self._cube_detector.process(reference_frame)
+        except Exception as exc:
+            self._cube_detection = CubeDetectionResult(
+                sequence=self._cube_detector.last_result.sequence + 1,
+                timestamp=None,
+                error=repr(exc),
+            )
 
     async def wait_for_pointcloud(
         self,
@@ -243,11 +277,7 @@ class TelemetryHub:
         snapshot = {
             "type": "snapshot",
             "model": model,
-            "workspace": {
-                "min": _vec(self._workspace.min_corner),
-                "max": _vec(self._workspace.max_corner),
-                "frame": self._workspace.frame,
-            },
+            "workspace": self._workspace.as_dict(),
             "robot": {
                 "wrist": None if robot is None else _pose_dict(
                     robot.wrist_pose.position,
@@ -265,6 +295,7 @@ class TelemetryHub:
                 "n_points": 0 if cloud is None else int(cloud.n_points),
                 "error": self._pointcloud_error,
             },
+            "cubes": self._cube_detection.as_snapshot(),
             "xr": {
                 "aligned": self._xr_pose is not None and self._anchor is not None,
                 "anchor": self._anchor,
@@ -282,6 +313,8 @@ class TelemetryHub:
         }
         if self._calibration_snapshot_provider is not None:
             snapshot["calibration"] = self._calibration_snapshot_provider()
+        if self._control_snapshot_provider is not None:
+            snapshot["control"] = self._control_snapshot_provider()
         return snapshot
 
     async def _robot_loop(self) -> None:

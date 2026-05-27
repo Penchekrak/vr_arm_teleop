@@ -35,6 +35,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from teleop_core.robot import RobotCommand, RobotDriver, RobotState
+from teleop_core.aero_hand_model import clamp_actuator_degrees
 from teleop_core.types import Pose
 from .rc5_state import (
     load_rc5_robot_api,
@@ -139,9 +140,12 @@ class AeroArmDriver(RobotDriver):
 
         self._joint_lower: Optional[tuple[float, ...]] = None
         self._joint_upper: Optional[tuple[float, ...]] = None
+        self._actuation_lower: Optional[tuple[float, ...]] = None
+        self._actuation_upper: Optional[tuple[float, ...]] = None
 
         self._home_pose:  Optional[Pose] = None
         self._last_curls: np.ndarray     = np.zeros(5, dtype=np.float32)
+        self._last_aero_actuators: Optional[np.ndarray] = None
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -177,6 +181,8 @@ class AeroArmDriver(RobotDriver):
             hand = AeroHand(port=self._aero_port) if self._aero_port else AeroHand()
             self._joint_lower = hand.joint_lower_limits
             self._joint_upper = hand.joint_upper_limits
+            self._actuation_lower = hand.actuation_lower_limits
+            self._actuation_upper = hand.actuation_upper_limits
             self._hand = hand
 
             # ── Home pose from actual RC5 position ───────────────────────────
@@ -260,8 +266,29 @@ class AeroArmDriver(RobotDriver):
                     self._robot.motion.mode.set("move")
 
         def _send_hand() -> None:
-            if cmd.target_finger_curls is None and cmd.target_thumb_abduction is None:
+            if (
+                cmd.target_finger_curls is None
+                and cmd.target_thumb_abduction is None
+                and cmd.target_aero_actuator_degrees is None
+            ):
                 return
+            if cmd.target_aero_actuator_degrees is not None:
+                actuators = np.asarray(cmd.target_aero_actuator_degrees, dtype=np.float32).reshape(-1)
+                if actuators.shape[0] != 7:
+                    raise ValueError("target_aero_actuator_degrees must have length 7")
+                if self._actuation_lower is not None and self._actuation_upper is not None:
+                    values = clamp_actuator_degrees(
+                        actuators,
+                        self._actuation_lower,
+                        self._actuation_upper,
+                    )
+                else:
+                    values = tuple(float(v) for v in actuators)
+                with self._hand_lock:
+                    self._hand.set_actuations(list(values))
+                self._last_aero_actuators = np.asarray(values, dtype=np.float32)
+                return
+
             c = (
                 np.asarray(cmd.target_finger_curls, dtype=np.float32)
                 if cmd.target_finger_curls is not None

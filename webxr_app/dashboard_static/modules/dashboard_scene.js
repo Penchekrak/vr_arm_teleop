@@ -5,6 +5,33 @@ export function robotToThreeVector(v) {
   return new THREE.Vector3(v[0], v[2], -v[1]);
 }
 
+export function threeToRobotVector(v) {
+  return [v.x, -v.z, v.y];
+}
+
+const ROBOT_TO_THREE_BASIS = new THREE.Matrix4().set(
+  1, 0, 0, 0,
+  0, 0, 1, 0,
+  0, -1, 0, 0,
+  0, 0, 0, 1,
+);
+const THREE_TO_ROBOT_BASIS = ROBOT_TO_THREE_BASIS.clone().invert();
+
+export function robotToThreeQuaternion(q) {
+  const rot = new THREE.Matrix4().makeRotationFromQuaternion(
+    new THREE.Quaternion(q[0], q[1], q[2], q[3]).normalize(),
+  );
+  const converted = ROBOT_TO_THREE_BASIS.clone().multiply(rot).multiply(THREE_TO_ROBOT_BASIS);
+  return new THREE.Quaternion().setFromRotationMatrix(converted).normalize();
+}
+
+export function threeToRobotQuaternion(q) {
+  const rot = new THREE.Matrix4().makeRotationFromQuaternion(q.clone().normalize());
+  const converted = THREE_TO_ROBOT_BASIS.clone().multiply(rot).multiply(ROBOT_TO_THREE_BASIS);
+  const out = new THREE.Quaternion().setFromRotationMatrix(converted).normalize();
+  return [out.x, out.y, out.z, out.w];
+}
+
 export class DashboardScene {
   constructor(container) {
     this.scene = new THREE.Scene();

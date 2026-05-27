@@ -346,9 +346,13 @@ class CalibrationPointCloudSource:
                 "finished": False,
                 "reason": "transforms_unavailable",
             }
-        frozen = {
+        persistable_transforms = {
             name: np.asarray(transform, dtype=np.float64).reshape(4, 4)
             for name, transform in self._latest_transforms.items()
+        }
+        frozen = {
+            name: transform
+            for name, transform in persistable_transforms.items()
             if name != self._anchor.name
         }
         if not frozen:
@@ -356,13 +360,34 @@ class CalibrationPointCloudSource:
                 "finished": False,
                 "reason": "target_transforms_unavailable",
             }
+        write_result = None
+        config_path = getattr(self, "_config_path", None)
+        if config_path is not None:
+            write_result = write_calibrated_hardware_config(
+                config_path,
+                persistable_transforms,
+                backup=True,
+            )
+            if hasattr(self, "_last_saved_timestamp"):
+                self._last_saved_timestamp = time.monotonic()
         self._finished_target_transforms = frozen
         self._finished = True
         self._autosave_state = "finished"
-        return {
+        result: dict[str, object] = {
             "finished": True,
             "frozen_camera_names": sorted(frozen),
         }
+        if write_result is not None:
+            result.update({
+                "saved_config_path": str(write_result.path),
+                "backup_path": (
+                    str(write_result.backup_path)
+                    if write_result.backup_path is not None
+                    else None
+                ),
+                "updated_camera_names": list(write_result.updated_camera_names),
+            })
+        return result
 
     def calibration_snapshot(self) -> dict:
         status = self._optimizer.status()

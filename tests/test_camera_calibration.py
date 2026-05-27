@@ -537,6 +537,50 @@ def test_finish_calibration_freezes_latest_non_anchor_transforms():
     )
 
 
+def test_finish_calibration_persists_frozen_transforms_to_camera_config(tmp_path):
+    config_path = tmp_path / "hardware_cameras.json"
+    config_path.write_text(json.dumps({
+        "cameras": [
+            {
+                "name": "d405",
+                "type": "realsense",
+                "serial": "anchor",
+                "calibrated": False,
+            },
+            {
+                "name": "d435i",
+                "type": "realsense",
+                "serial": "target",
+                "calibrated": False,
+            },
+        ],
+    }))
+    world_from_anchor = transform_from_rt(np.eye(3), [0.01, 0.02, 0.03])
+    world_from_target = transform_from_rt(np.eye(3), [0.1, 0.2, 0.3])
+    source = object.__new__(CalibrationPointCloudSource)
+    source._config_path = config_path
+    source._anchor = SimpleNamespace(name="d405")
+    source._finished = False
+    source._finished_target_transforms = {}
+    source._latest_transforms = {
+        "d405": world_from_anchor.tolist(),
+        "d435i": world_from_target.tolist(),
+    }
+
+    result = source.finish_calibration()
+    written = json.loads(config_path.read_text())
+
+    assert result["finished"] is True
+    assert result["saved_config_path"] == str(config_path)
+    assert result["updated_camera_names"] == ["d405", "d435i"]
+    assert written["cameras"][0]["calibrated"] is True
+    assert written["cameras"][0]["world_from_camera"] == world_from_anchor.tolist()
+    assert written["cameras"][1]["calibrated"] is True
+    assert written["cameras"][1]["world_from_camera"] == world_from_target.tolist()
+    assert written["cameras"][1]["extrinsic_world_from_cam"] == world_from_target.tolist()
+    assert (tmp_path / "hardware_cameras.json.bak").exists()
+
+
 def test_calibration_dashboard_feeds_include_unlinked_target_camera():
     source = object.__new__(CalibrationPointCloudSource)
     source._readers = [

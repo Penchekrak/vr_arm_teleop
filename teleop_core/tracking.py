@@ -97,6 +97,10 @@ class CartesianTracker:
     def is_engaged(self) -> bool:
         return self._anchor is not None
 
+    def set_workspace(self, workspace: Workspace) -> None:
+        """Replace the clamp volume after a dashboard workspace edit."""
+        self._workspace = workspace
+
     def engage(self, user_wrist: Pose, robot_wrist: Pose, t: float) -> None:
         """Start tracking. Subsequent updates produce non-None targets."""
         self._anchor = WristAnchor(

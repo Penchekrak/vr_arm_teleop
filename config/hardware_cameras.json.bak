@@ -1,22 +1,19 @@
 {
-  "workspace_crop": {
-    "min": [0.0, 0.0, 0.0],
-    "max": [0.5, 0.5, 0.5]
-  },
+  "workspace_crop": null,
   "max_points": 200000,
   "cameras": [
     {
-      "name": "rs-front",
+      "name": "d405",
       "type": "realsense",
-      "serial": "REALSENSE_SERIAL",
+      "serial": "230322270810",
       "urdf_link": "d405_depth_optical_frame",
-      "width": 424,
-      "height": 240,
+      "width": 640,
+      "height": 480,
       "fps": 30,
       "downsample": 4,
-      "z_min": 0.15,
-      "z_max": 2.5,
-      "calibrated": false,
+      "z_min": 0.07,
+      "z_max": 0.6,
+      "calibrated": true,
       "world_from_camera": [
         [1, 0, 0, 0],
         [0, 1, 0, 0],
@@ -25,15 +22,16 @@
       ]
     },
     {
-      "name": "zed-overhead",
-      "type": "zed2i",
-      "serial": "12345678",
-      "resolution": "HD720",
+      "name": "d435i",
+      "type": "realsense",
+      "serial": "420222071552",
+      "width": 640,
+      "height": 480,
       "fps": 30,
       "downsample": 4,
-      "z_min": 0.2,
+      "z_min": 0.3,
       "z_max": 3.0,
-      "calibrated": false,
+      "calibrated": true,
       "world_from_camera": [
         [1, 0, 0, 0],
         [0, 1, 0, 0],

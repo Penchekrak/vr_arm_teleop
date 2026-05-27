@@ -72,11 +72,7 @@ def _make_robot_driver(name: str, args: argparse.Namespace):
             # Canonical full robot model: arm + prehand D405 + right hand,
             # with simplified collisions for stable PyBullet simulation.
             urdf = _default_full_urdf()
-        home_q = None
-        if args.home_joints is not None:
-            home_q = tuple(float(s) for s in args.home_joints.split(","))
-            if len(home_q) != 6:
-                raise SystemExit("--home-joints needs 6 comma-separated radians")
+        home_q = _parse_home_joints(args)
         return PybulletRobotDriver(
             urdf_path=urdf, gui=args.pybullet_gui, home_joint_angles=home_q,
         )
@@ -97,17 +93,22 @@ def _make_robot_driver(name: str, args: argparse.Namespace):
     raise SystemExit(f"unknown robot-backend: {name!r}")
 
 
+def _parse_home_joints(args: argparse.Namespace) -> tuple[float, ...] | None:
+    if args.home_joints is None:
+        return None
+    home_q = tuple(float(s) for s in args.home_joints.split(","))
+    if len(home_q) != 6:
+        raise SystemExit("--home-joints needs 6 comma-separated radians")
+    return home_q
+
+
 def _make_workspace(args: argparse.Namespace, home: Pose | None) -> Workspace:
     """Read workspace box from CLI / config file, or derive it from the
     robot's home pose so the operator can reach forward from where the
     arm starts but not above it or below the robot base."""
     if args.workspace is not None:
         data = json.loads(args.workspace.read_text())
-        return Workspace(
-            min_corner=np.asarray(data["min"], dtype=np.float32),
-            max_corner=np.asarray(data["max"], dtype=np.float32),
-            frame=data.get("frame", "world"),
-        )
+        return Workspace.from_dict(data)
     if home is not None:
         hx, hy, hz = (float(v) for v in home.position)
         # Forward reach is +X relative to the robot base. Y is symmetric
@@ -200,8 +201,26 @@ async def main() -> None:
             robot_assets_root=urdf_for_dashboard.parent,
         ),
         safety_config=SafetyConfig(),
+        dashboard_grasp_planner=_make_dashboard_grasp_planner(urdf_for_dashboard),
+        dashboard_plan_simulator=_make_dashboard_plan_simulator(urdf_for_dashboard, args),
     )
     await server.run()
+
+
+def _make_dashboard_grasp_planner(urdf_path: Path):
+    from teleop_backends.robot.aero_grasp import AeroCubePinchPlanner
+
+    return AeroCubePinchPlanner.from_urdf(urdf_path)
+
+
+def _make_dashboard_plan_simulator(urdf_path: Path, args: argparse.Namespace):
+    from teleop_backends.robot import PybulletPlanSimulator
+
+    return PybulletPlanSimulator(
+        urdf_path=urdf_path,
+        home_joint_angles=_parse_home_joints(args),
+        gui=False,
+    )
 
 
 if __name__ == "__main__":

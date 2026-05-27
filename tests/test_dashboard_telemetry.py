@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from teleop_core.point_cloud import PointCloudFrame
+from teleop_core.cube_detection import CubeDetectionConfig, CubeDetector
 from teleop_core.robot import RobotState
 from teleop_core.server import _resolve_robot_asset_path
 from teleop_core.telemetry import TelemetryHub
@@ -255,6 +256,61 @@ def test_multiple_dashboard_cloud_waiters_share_one_grab():
         assert first.sequence == second.sequence == 1
         assert first.payload == second.payload
         assert pc.grab_count == 1
+
+    asyncio.run(run())
+
+
+def test_dashboard_snapshot_contains_detected_cubes_from_reference_cloud():
+    class CubePointCloud(CountingPointCloud):
+        def __init__(self):
+            super().__init__()
+            edge = 0.038
+            top = np.array(
+                [
+                    [x, y, edge]
+                    for x in np.linspace(0.10, 0.138, 8)
+                    for y in np.linspace(0.02, 0.058, 8)
+                ],
+                dtype=np.float32,
+            )
+            side = np.array(
+                [
+                    [0.10, y, z]
+                    for y in np.linspace(0.02, 0.058, 8)
+                    for z in np.linspace(0.006, 0.034, 4)
+                ],
+                dtype=np.float32,
+            )
+            points = np.vstack([top, side])
+            self.frame = PointCloudFrame(
+                points=points,
+                colors=np.repeat(np.array([[200, 20, 20]], dtype=np.uint8), len(points), axis=0),
+                timestamp=345.0,
+            )
+
+        def latest_cube_reference_frame(self):
+            return self.frame
+
+    async def run():
+        hub = TelemetryHub(
+            point_cloud_source=CubePointCloud(),
+            robot_driver=FakeRobot(),
+            workspace=_workspace(),
+            urdf_url="/robot/robot.urdf",
+            urdf_assets_url="/robot/assets/",
+            cube_detector=CubeDetector(CubeDetectionConfig(window_size=1, min_observations=1)),
+        )
+        await hub.sample_pointcloud_once()
+        snap = hub.snapshot()
+
+        assert snap["cubes"]["count"] == 1
+        cube = snap["cubes"]["items"][0]
+        assert cube["id"] == "cube-0"
+        assert cube["edge_m"] == 0.038
+        assert cube["center_m"] == pytest.approx([0.119, 0.039, 0.019], abs=0.008)
+        assert cube["roll_rad"] == 0.0
+        assert cube["pitch_rad"] == 0.0
+        assert "yaw_rad" in cube
 
     asyncio.run(run())
 

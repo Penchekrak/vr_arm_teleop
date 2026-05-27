@@ -31,6 +31,33 @@
         <label><input id="toggle-workspace" type="checkbox" checked> Workspace</label>
         <label><input id="toggle-xr" type="checkbox" checked> XR headset/hand</label>
         <label><input id="toggle-calibration" type="checkbox" checked> Calibration</label>
+        <label><input id="toggle-cubes" type="checkbox" checked> Cubes</label>
+      </div>
+      <div class="panel-section">
+        <h2>Control</h2>
+        <div class="button-row">
+          <button id="enable-control" type="button">Enable Control</button>
+          <button id="disable-control" type="button" disabled>Disable</button>
+        </div>
+        <div class="button-row">
+          <button id="adjust-workspace" type="button">Adjust Workspace</button>
+          <button id="save-workspace" type="button" disabled>Save</button>
+          <button id="cancel-workspace" type="button" disabled>Cancel</button>
+        </div>
+        <div class="segmented">
+          <button data-workspace-mode="translate" type="button">Move</button>
+          <button data-workspace-mode="rotate" type="button">Rotate</button>
+          <button data-workspace-mode="scale" type="button">Size</button>
+        </div>
+        <div class="button-row">
+          <button id="plan-grasp" type="button" disabled>Simulate Grasp</button>
+          <button id="approve-grasp" type="button" disabled>Approve Move</button>
+        </div>
+        <div id="control-status" class="control-status">Control disabled</div>
+      </div>
+      <div class="panel-section">
+        <h2>Cubes</h2>
+        <div id="cube-list"></div>
       </div>
       <div class="panel-section">
         <h2>Calibration</h2>

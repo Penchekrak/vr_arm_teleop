@@ -4,6 +4,7 @@ import time
 import numpy as np
 import pytest
 
+from teleop_core.robot import RobotCommand
 from teleop_core.types import Pose
 from teleop_backends.robot.aero_arm import AeroArmDriver
 from teleop_backends.robot.rc5_state import (
@@ -124,3 +125,31 @@ def test_aero_arm_driver_get_state_populates_named_rc5_joints(monkeypatch):
     assert state.joint_names == RC5_ARM_JOINT_NAMES
     assert np.allclose(state.joint_angles, [0, 1, 2, 3, 4, 5])
     assert state.timestamp == 123.0
+
+
+def test_aero_arm_driver_sends_direct_actuator_goal_without_compact_joint_mapping():
+    class FakeHand:
+        def __init__(self):
+            self.actuations = []
+            self.joint_positions = []
+
+        def set_actuations(self, values):
+            self.actuations.append(list(values))
+
+        def set_joint_positions(self, values):
+            self.joint_positions.append(list(values))
+
+    driver = AeroArmDriver()
+    driver._robot = object()
+    driver._hand = FakeHand()
+    driver._joint_lower = tuple([0.0] * 16)
+    driver._joint_upper = tuple([90.0] * 16)
+    driver._actuation_lower = tuple([0.0] * 7)
+    driver._actuation_upper = tuple([300.0] * 7)
+
+    goal = np.array([45.0, 20.0, 30.0, 120.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    asyncio.run(driver.send(RobotCommand(target_aero_actuator_degrees=goal)))
+
+    assert driver._hand.actuations == [pytest.approx(goal.tolist())]
+    assert driver._hand.joint_positions == []

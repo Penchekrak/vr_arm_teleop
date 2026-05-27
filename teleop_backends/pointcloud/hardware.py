@@ -36,14 +36,16 @@ class HardwareCameraConfig:
     world_from_camera: np.ndarray
     calibrated: bool
     urdf_link: str | None = None
-    width: int = 640
-    height: int = 480
+    width: int = 424
+    height: int = 240
     fps: int = 30
     downsample: int = 4
     z_min: float = 0.15
     z_max: float = 2.5
     resolution: str | None = None
     depth_mode: str | None = None
+    frame_timeout_ms: int = 1000
+    restart_after_timeouts: int = 2
 
 
 @dataclass(frozen=True)
@@ -186,14 +188,16 @@ def _parse_camera(raw: dict, index: int) -> HardwareCameraConfig:
         urdf_link=(
             None if raw.get("urdf_link") is None else str(raw.get("urdf_link"))
         ),
-        width=int(raw.get("width", 640)),
-        height=int(raw.get("height", 480)),
+        width=int(raw.get("width", 424)),
+        height=int(raw.get("height", 240)),
         fps=int(raw.get("fps", 30)),
         downsample=downsample,
         z_min=z_min,
         z_max=z_max,
         resolution=raw.get("resolution"),
         depth_mode=raw.get("depth_mode"),
+        frame_timeout_ms=max(1, int(raw.get("frame_timeout_ms", 1000))),
+        restart_after_timeouts=max(1, int(raw.get("restart_after_timeouts", 2))),
     )
 
 
@@ -291,6 +295,19 @@ def _encode_rgb_jpeg(image: np.ndarray) -> bytes | None:
     return encoded.tobytes()
 
 
+def _is_realsense_frame_timeout(message: str) -> bool:
+    normalized = message.lower()
+    return (
+        "frame" in normalized
+        and "arrive" in normalized
+        and (
+            "5000" in normalized
+            or "5 seconds" in normalized
+            or "timeout" in normalized
+        )
+    )
+
+
 class HardwarePointCloudSource(PointCloudSource):
     """Fuses configured RealSense and ZED 2i readers into one cloud."""
 
@@ -304,6 +321,7 @@ class HardwarePointCloudSource(PointCloudSource):
         self._readers: list[tuple[HardwareCameraConfig, CameraPointCloudReader]] = []
         self._started = False
         self._warned_uncalibrated = False
+        self._latest_cube_reference_frame: PointCloudFrame | None = None
 
     @classmethod
     def from_config_file(
@@ -318,18 +336,18 @@ class HardwarePointCloudSource(PointCloudSource):
         return self._config.display_calibrated
 
     def dashboard_camera_feeds(self) -> list[dict[str, object]]:
-        """Describe color feeds that the dashboard can attach to URDF links."""
+        """Describe color feeds that the dashboard can display."""
         feeds: list[dict[str, object]] = []
         for camera in self._config.cameras:
-            if not camera.urdf_link:
-                continue
-            feeds.append({
+            feed: dict[str, object] = {
                 "name": camera.name,
-                "urdf_link": camera.urdf_link,
                 "url": f"/api/cameras/{quote(camera.name, safe='')}/color.jpg",
                 "width": int(camera.width),
                 "height": int(camera.height),
-            })
+            }
+            if camera.urdf_link:
+                feed["urdf_link"] = camera.urdf_link
+            feeds.append(feed)
         return feeds
 
     def dashboard_pointcloud_frame(self) -> str:
@@ -340,6 +358,15 @@ class HardwarePointCloudSource(PointCloudSource):
             if camera.name == camera_name:
                 return reader.latest_color_jpeg()
         return None
+
+    def latest_cube_reference_frame(self) -> PointCloudFrame | None:
+        """Return the latest external-camera world cloud for cube detection.
+
+        Wrist-mounted cameras have a URDF link in the current hardware config;
+        those are useful for operator view but intentionally excluded from
+        tabletop cube fitting because their viewpoint moves with the robot.
+        """
+        return self._latest_cube_reference_frame
 
     async def start(self) -> None:
         if self._started:
@@ -374,6 +401,17 @@ class HardwarePointCloudSource(PointCloudSource):
             frame = await reader.grab_camera_frame()
             if frame is not None:
                 frames.append((camera, frame))
+
+        external_frames = [
+            (camera, frame)
+            for camera, frame in frames
+            if camera.urdf_link is None
+        ]
+        self._latest_cube_reference_frame = fuse_camera_frames(
+            external_frames,
+            workspace_crop=self._config.workspace_crop,
+            max_points=self._config.max_points,
+        )
 
         return fuse_camera_frames(
             frames,
@@ -416,6 +454,7 @@ class RealSensePointCloudReader(CameraPointCloudReader):
         self._latest_frame_timestamp: float | None = None
         self._latest_frame_number: int | None = None
         self._depth_scale = 0.001
+        self._consecutive_timeouts = 0
 
     async def start(self) -> None:
         try:
@@ -451,6 +490,7 @@ class RealSensePointCloudReader(CameraPointCloudReader):
         self._pipeline = pipeline
         self._align = rs.align(rs.stream.color)
         self._pointcloud = rs.pointcloud()
+        self._consecutive_timeouts = 0
         try:
             self._depth_scale = float(
                 self._profile.get_device().first_depth_sensor().get_depth_scale()
@@ -471,7 +511,9 @@ class RealSensePointCloudReader(CameraPointCloudReader):
         return await asyncio.to_thread(self._grab_blocking)
 
     def _grab_blocking(self) -> Optional[PointCloudFrame]:
-        frames = self._pipeline.wait_for_frames()
+        frames = self._wait_for_frames()
+        if frames is None:
+            return self._handle_frame_timeout("no frames returned before timeout")
         if self._align is not None:
             frames = self._align.process(frames)
         depth = frames.get_depth_frame()
@@ -479,6 +521,7 @@ class RealSensePointCloudReader(CameraPointCloudReader):
         if not depth or not color:
             return None
 
+        self._consecutive_timeouts = 0
         self._pointcloud.map_to(color)
         points_obj = self._pointcloud.calculate(depth)
         vertices = np.asanyarray(points_obj.get_vertices()).view(np.float32).reshape(-1, 3)
@@ -503,6 +546,55 @@ class RealSensePointCloudReader(CameraPointCloudReader):
             colors=colors,
             timestamp=time.monotonic(),
         )
+
+    def _wait_for_frames(self):
+        timeout_ms = int(self._camera.frame_timeout_ms)
+        try_wait = getattr(self._pipeline, "try_wait_for_frames", None)
+        try:
+            if callable(try_wait):
+                result = try_wait(timeout_ms)
+                if isinstance(result, tuple):
+                    success, frames = result
+                    return frames if success else None
+                return result or None
+            return self._pipeline.wait_for_frames(timeout_ms)
+        except RuntimeError as exc:
+            message = str(exc)
+            if _is_realsense_frame_timeout(message):
+                return None
+            raise
+
+    def _handle_frame_timeout(self, reason: str) -> Optional[PointCloudFrame]:
+        self._consecutive_timeouts += 1
+        print(
+            f"[pointcloud] RealSense {self._camera.name} frame timeout "
+            f"({self._consecutive_timeouts}/"
+            f"{self._camera.restart_after_timeouts}): {reason}"
+        )
+        if self._consecutive_timeouts >= self._camera.restart_after_timeouts:
+            self._restart_blocking()
+        return None
+
+    def _restart_blocking(self) -> None:
+        rs = self._rs
+        if rs is None:
+            return
+        pipeline = self._pipeline
+        self._pipeline = None
+        self._profile = None
+        self._align = None
+        self._pointcloud = None
+        if pipeline is not None:
+            try:
+                pipeline.stop()
+            except Exception as exc:
+                print(
+                    f"[pointcloud] RealSense {self._camera.name} stop before "
+                    f"restart failed: {exc!r}"
+                )
+        print(f"[pointcloud] restarting RealSense {self._camera.name} pipeline")
+        time.sleep(0.2)
+        self._start_blocking(rs)
 
     def latest_color_jpeg(self) -> bytes | None:
         return self._latest_color_jpeg

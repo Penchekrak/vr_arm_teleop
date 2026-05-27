@@ -28,6 +28,11 @@ from typing import Optional
 import numpy as np
 import pybullet as p
 
+from teleop_core.aero_hand_model import (
+    AERO_ACTUATION_LOWER_LIMITS_DEG,
+    AERO_ACTUATION_UPPER_LIMITS_DEG,
+    clamp_actuator_degrees,
+)
 from teleop_core.robot import RobotCommand, RobotDriver, RobotState
 from teleop_core.types import Pose
 
@@ -211,6 +216,7 @@ class PybulletRobotDriver(RobotDriver):
         target_pose = cmd.target_wrist_pose
         target_curls = cmd.target_finger_curls
         target_abd = cmd.target_thumb_abduction
+        target_actuators = cmd.target_aero_actuator_degrees
 
         def _apply() -> None:
             if target_pose is not None:
@@ -233,6 +239,8 @@ class PybulletRobotDriver(RobotDriver):
                 hi = min(self._thumb_opp.upper, _THUMB_ABD_MAX_RAD)
                 rad = lo + a * (hi - lo)
                 self._motor_target(self._thumb_opp, rad)
+            if target_actuators is not None:
+                self._set_aero_actuators(target_actuators)
 
         async with self._lock:
             await asyncio.to_thread(_apply)
@@ -323,6 +331,36 @@ class PybulletRobotDriver(RobotDriver):
         for joint in joints:
             target = joint.lower + c * (joint.upper - joint.lower)
             self._motor_target(joint, target)
+
+    def _set_aero_actuators(self, actuator_degrees) -> None:
+        values = np.asarray(
+            clamp_actuator_degrees(
+                np.asarray(actuator_degrees, dtype=np.float32).reshape(-1),
+                AERO_ACTUATION_LOWER_LIMITS_DEG,
+                AERO_ACTUATION_UPPER_LIMITS_DEG,
+            ),
+            dtype=np.float32,
+        )
+        lo = np.asarray(AERO_ACTUATION_LOWER_LIMITS_DEG, dtype=np.float32)
+        hi = np.asarray(AERO_ACTUATION_UPPER_LIMITS_DEG, dtype=np.float32)
+        denom = np.maximum(hi - lo, 1e-6)
+        normalized = np.clip((values - lo) / denom, 0.0, 1.0)
+
+        if self._thumb_opp is not None:
+            self._motor_target(self._thumb_opp, np.deg2rad(float(values[0])))
+        curls = np.array(
+            [
+                max(float(normalized[1]), float(normalized[2])),
+                float(normalized[3]),
+                float(normalized[4]),
+                float(normalized[5]),
+                float(normalized[6]),
+            ],
+            dtype=np.float32,
+        )
+        for finger, curl in enumerate(curls):
+            self._set_finger_curl(finger, float(curl))
+        self._last_curls = curls
 
     def _motor_target(self, joint: _JointInfo, target: float) -> None:
         if joint.upper > joint.lower:

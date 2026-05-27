@@ -38,7 +38,9 @@ export class StatusPanel {
     const model = snapshot.model || {};
     const robot = snapshot.robot || {};
     const cloud = snapshot.pointcloud || {};
+    const cubes = snapshot.cubes || {};
     const xr = snapshot.xr || {};
+    const control = snapshot.control || {};
     const status = snapshot.status || {};
     const calibration = snapshot.calibration || null;
     const jointCount = robot.joints ? Object.keys(robot.joints).length : 0;
@@ -63,6 +65,7 @@ export class StatusPanel {
         ${row('Cloud points', cloud.n_points || 0)}
         ${row('Cloud seq', cloud.sequence || 0)}
         ${row('Cloud Hz', fmtNumber(status.pointcloud_hz, 1))}
+        ${row('Cubes', cubes.count || 0)}
       </div>
       <div class="status-group">
         ${row('XR', xrState, xr.aligned ? '' : 'warn')}
@@ -70,8 +73,15 @@ export class StatusPanel {
         ${row('Right wrist', xr.right_wrist ? 'present' : 'none')}
       </div>
       <div class="status-group">
+        ${row('Control', control.enabled ? 'enabled' : 'disabled', control.enabled ? '' : 'warn')}
+        ${row('Pending plan', control.pending_plan ? control.pending_plan.plan_id : 'none')}
+        ${row('Executing', control.executing ? 'yes' : 'no', control.executing ? 'warn' : '')}
+        ${row('Control error', control.last_error || 'none', control.last_error ? 'error' : '')}
+      </div>
+      <div class="status-group">
         ${row('Robot error', robotError, robot.error ? 'error' : '')}
         ${row('Cloud error', cloudError, cloud.error ? 'error' : '')}
+        ${row('Cube error', cubes.error || 'none', cubes.error ? 'error' : '')}
       </div>
       ${calibrationHtml}
     `;

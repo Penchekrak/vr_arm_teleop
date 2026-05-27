@@ -52,6 +52,7 @@ class RobotCommand:
     target_wrist_pose: Optional[Pose] = None
     target_finger_curls: Optional[np.ndarray] = None  # (5,) normalized
     target_thumb_abduction: Optional[float] = None    # normalized 0..1
+    target_aero_actuator_degrees: Optional[np.ndarray] = None  # (7,) Aero actuator degrees
     timestamp: float = 0.0
 
 

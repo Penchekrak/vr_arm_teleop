@@ -26,8 +26,8 @@ class CameraConfig:
 
     serial: str
     extrinsic_world_from_cam: np.ndarray
-    width: int = 640
-    height: int = 480
+    width: int = 424
+    height: int = 240
     fps: int = 30
 
 

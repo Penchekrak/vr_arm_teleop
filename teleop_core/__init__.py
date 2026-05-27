@@ -15,6 +15,9 @@ from .calibration import (
     CalibBound, CalibStep, CalibStepKind, CalibrationRecord, FingerCalibrationFSM,
 )
 from .point_cloud import PointCloudFrame, PointCloudSource, encode_frame
+from .cube_detection import (
+    CubeDetectionConfig, CubeDetectionResult, CubeDetector, DetectedCube,
+)
 from .robot import RobotCommand, RobotDriver, RobotState
 from .safety import SafetyConfig, SafetyEvent, SafetyKind, SafetyMonitor, Severity
 from .server import ServerConfig, TeleopServer
@@ -27,6 +30,7 @@ __all__ = [
     "CalibBound", "CalibStep", "CalibStepKind", "CalibrationRecord",
     "FingerCalibrationFSM",
     "PointCloudFrame", "PointCloudSource", "encode_frame",
+    "CubeDetectionConfig", "CubeDetectionResult", "CubeDetector", "DetectedCube",
     "RobotCommand", "RobotDriver", "RobotState",
     "SafetyConfig", "SafetyEvent", "SafetyKind", "SafetyMonitor", "Severity",
     "ServerConfig", "TeleopServer",

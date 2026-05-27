@@ -30,6 +30,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from .calibration import FingerCalibrationFSM
+from .dashboard_control import DashboardControlError, DashboardControlService
 from .messages import (
     AnchorMsg, ButtonMsg, HandStateMsg, PhaseMsg, PromptMsg, RobotEchoMsg,
     TriggerMsg, WorkspaceMsg, decode, encode,
@@ -85,6 +86,8 @@ class TeleopServer:
         workspace: Workspace,
         config: ServerConfig,
         safety_config: SafetyConfig | None = None,
+        dashboard_grasp_planner=None,
+        dashboard_plan_simulator=None,
     ) -> None:
         self._pc = point_cloud_source
         self._robot = robot_driver
@@ -112,6 +115,15 @@ class TeleopServer:
             robot_hz=self._config.dashboard_robot_hz,
             status_hz=self._config.dashboard_status_hz,
         )
+        self._dashboard_control = DashboardControlService(
+            robot_driver=self._robot,
+            workspace_getter=lambda: self._workspace,
+            workspace_setter=self._set_workspace,
+            cube_provider=lambda: self._telemetry.latest_cube_detection,
+            grasp_planner=dashboard_grasp_planner,
+            plan_simulator=dashboard_plan_simulator,
+        )
+        self._telemetry.set_control_snapshot_provider(self._dashboard_control.snapshot)
 
     async def run(self) -> None:
         """Start backends, start aiohttp, block until shutdown."""
@@ -178,6 +190,11 @@ class TeleopServer:
         app = web.Application()
         app.router.add_get("/ws", self._handle_dashboard_ws)
         app.router.add_get("/api/snapshot", self._handle_dashboard_snapshot)
+        app.router.add_post("/api/control/enable", self._handle_dashboard_control_enable)
+        app.router.add_post("/api/control/disable", self._handle_dashboard_control_disable)
+        app.router.add_post("/api/workspace", self._handle_dashboard_workspace)
+        app.router.add_post("/api/grasp/plan", self._handle_dashboard_grasp_plan)
+        app.router.add_post("/api/grasp/approve", self._handle_dashboard_grasp_approve)
         app.router.add_get(
             "/api/cameras/{name}/color.jpg",
             self._handle_dashboard_camera_color,
@@ -193,6 +210,59 @@ class TeleopServer:
 
     async def _handle_dashboard_snapshot(self, _request) -> web.Response:
         return web.json_response(self._telemetry.snapshot())
+
+    async def _handle_dashboard_control_enable(self, _request) -> web.Response:
+        self._tracker.disengage()
+        return await self._dashboard_control_response(
+            lambda: self._dashboard_control.enable(),
+        )
+
+    async def _handle_dashboard_control_disable(self, _request) -> web.Response:
+        return await self._dashboard_control_response(
+            lambda: self._dashboard_control.disable(),
+        )
+
+    async def _handle_dashboard_workspace(self, request) -> web.Response:
+        try:
+            payload = await _read_json_body(request)
+        except ValueError as exc:
+            return web.json_response({"error": "bad_request", "reason": str(exc)}, status=400)
+        return await self._dashboard_control_response(
+            lambda: self._dashboard_control.update_workspace(payload),
+        )
+
+    async def _handle_dashboard_grasp_plan(self, request) -> web.Response:
+        try:
+            payload = await _read_json_body(request)
+            cube_id = str(payload["cube_id"])
+        except (KeyError, ValueError) as exc:
+            return web.json_response({"error": "bad_request", "reason": str(exc)}, status=400)
+        return await self._dashboard_control_response(
+            lambda: self._dashboard_control.plan_grasp(cube_id),
+            envelope="pending_plan",
+        )
+
+    async def _handle_dashboard_grasp_approve(self, request) -> web.Response:
+        try:
+            payload = await _read_json_body(request)
+            plan_id = str(payload["plan_id"])
+        except (KeyError, ValueError) as exc:
+            return web.json_response({"error": "bad_request", "reason": str(exc)}, status=400)
+        return await self._dashboard_control_response(
+            lambda: self._dashboard_control.approve(plan_id),
+        )
+
+    async def _dashboard_control_response(self, action, *, envelope: str | None = None) -> web.Response:
+        try:
+            result = await action()
+        except DashboardControlError as exc:
+            return web.json_response(exc.as_dict(), status=exc.status)
+        if hasattr(result, "as_dict"):
+            result = result.as_dict()
+        body = result if envelope is None else {envelope: result}
+        if isinstance(body, dict) and "control" not in body:
+            body = {**body, "control": self._dashboard_control.snapshot()}
+        return web.json_response(body)
 
     async def _handle_dashboard_camera_color(self, request) -> web.Response:
         latest_color_jpeg = getattr(self._pc, "latest_color_jpeg", None)
@@ -401,6 +471,12 @@ class TeleopServer:
         """Engage / disengage Cartesian tracking on the left trigger."""
         if trg.hand != "left" or trg.name != "trigger":
             return
+        if self._dashboard_control.enabled:
+            await ws.send_str(encode(PromptMsg(
+                text="Dashboard control mode is enabled; VR teleop is read-only.",
+                severity="warn",
+            )))
+            return
         # Threshold edges: the client sends analog values, the server makes
         # the engage decision so the policy (e.g. hysteresis) lives in one
         # place if we ever need to harden it.
@@ -509,6 +585,8 @@ class TeleopServer:
 
     async def _tick_command(self) -> None:
         """One iteration of the command loop. Extracted for readability."""
+        if self._dashboard_control.enabled:
+            return
         if not self._tracker.is_engaged:
             return
         user_wrist = self._latest_user_wrist_pose()
@@ -573,3 +651,19 @@ class TeleopServer:
     def _engage_tracking(self) -> None: raise NotImplementedError
     def _disengage_tracking(self) -> None: raise NotImplementedError
     def _fault(self, reason: str) -> None: raise NotImplementedError
+
+    def _set_workspace(self, workspace: Workspace) -> None:
+        self._workspace = workspace
+        self._tracker.disengage()
+        self._tracker.set_workspace(workspace)
+        self._telemetry.set_workspace(workspace)
+
+
+async def _read_json_body(request) -> dict:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise ValueError("request body must be JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    return payload

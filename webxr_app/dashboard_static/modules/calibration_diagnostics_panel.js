@@ -43,7 +43,7 @@ export class CalibrationDiagnosticsPanel {
     const calibration = snapshot.calibration || null;
     const feeds = (snapshot.model && snapshot.model.camera_feeds) || [];
     if (!calibration || !Array.isArray(calibration.cameras)) {
-      this._root.innerHTML = '';
+      this._root.innerHTML = this._cameraFeedsHtml(feeds);
       return;
     }
 
@@ -77,6 +77,37 @@ export class CalibrationDiagnosticsPanel {
     this._root.innerHTML = `
       <div class="panel-section">
         <h2>Calibration Detection</h2>
+        <div class="calibration-grid">${cards}</div>
+      </div>
+    `;
+  }
+
+  _cameraFeedsHtml(feeds) {
+    if (!Array.isArray(feeds) || feeds.length === 0) return '';
+    const now = Date.now();
+    const refreshImages = now - this._lastImageRefresh > 300;
+    if (refreshImages) this._lastImageRefresh = now;
+    const cards = feeds.map(feed => {
+      const name = feed.name || 'camera';
+      const url = feed.url || feed.calibration_url || '';
+      if (url && refreshImages) {
+        this._imageUrls.set(name, `${url}${url.includes('?') ? '&' : '?'}t=${now}`);
+      }
+      const imageUrl = this._imageUrls.get(name) || '';
+      const size = feed.width && feed.height ? `${feed.width}x${feed.height}` : 'live';
+      return `
+        <div class="calibration-card" data-camera="${escapeHtml(name)}">
+          <div class="calibration-card-head">
+            <span>${escapeHtml(name)}</span>
+            <span>${escapeHtml(size)}</span>
+          </div>
+          ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(name)} camera feed">` : ''}
+        </div>
+      `;
+    }).join('');
+    return `
+      <div class="panel-section">
+        <h2>Camera Feeds</h2>
         <div class="calibration-grid">${cards}</div>
       </div>
     `;
