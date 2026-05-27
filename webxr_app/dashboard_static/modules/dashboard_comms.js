@@ -66,15 +66,15 @@ export class DashboardComms {
     }
   }
 
-  async postJson(path, body = null) {
+  async postJson(path, payload = null) {
     const headers = { 'Accept': 'application/json' };
     const options = {
       method: 'POST',
       headers,
     };
-    if (body !== null) {
+    if (payload !== null) {
       headers['Content-Type'] = 'application/json';
-      options.body = JSON.stringify(body);
+      options.body = JSON.stringify(payload);
     }
     const res = await fetch(path, {
       ...options,

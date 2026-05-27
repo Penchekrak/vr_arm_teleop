@@ -6,9 +6,9 @@ relevant interface files, implement it.
 
 ## 1. Safety monitor ⏱ 1h
 
-Workspace-exit feedback is already wired client-side (warning panel
-+ red wireframe). What's still missing is the *server-side* safety
-loop and the state-transition hooks it relies on.
+Workspace-exit feedback and dashboard workspace clamping are wired, but
+the dashboard approval gate still needs the server-side safety loop for
+live execution faults.
 
 - `teleop_core/safety.SafetyMonitor.step` — lag detection
   (commanded vs actual wrist) and stale-state detection.
@@ -22,7 +22,25 @@ loop and the state-transition hooks it relies on.
 Done when: yanking the robot driver offline pops a `fault` overlay
 that the user has to acknowledge.
 
-## 2. Hardware point-cloud calibration ✅ implemented, needs hardware validation
+## 2. Dashboard-first hardware validation ⏱ hardware session
+
+The dashboard now owns workspace adjustment, cube selection, PyBullet
+preview, and approval-only execution. Validate this on the physical
+robot before treating it as production-safe.
+
+- Confirm the oriented workspace transform controls match the gripper
+  frame and block out-of-box targets.
+- Tune PyBullet preview tolerance against RC5 actual final pose error.
+- Add stale-plan invalidation for cube pose drift, robot motion, and
+  workspace edits between simulation and approval.
+- Add a visible emergency freeze/hold action that maps to the real arm
+  SDK, not only dashboard control disable.
+
+Done when: selecting a cube from the dashboard simulates the Aero pinch,
+requires explicit approval, and executes the same motion on hardware
+without any VR trigger input.
+
+## 3. Hardware point-cloud calibration ✅ implemented, needs hardware validation
 
 Hardware capture/fusion plumbing exists for mixed RealSense and ZED 2i
 configs. Continuous camera-to-robot calibration now opens the configured
@@ -37,7 +55,7 @@ solutions back into the hardware camera config.
 Done when: with the configured cameras on the workspace, the fused
 cloud aligns with the robot/workspace frame in AR.
 
-## 3. Pybullet point-cloud source ⏱ 2h
+## 4. Pybullet point-cloud source ⏱ 2h
 
 Useful for developing the pipeline without real cameras pointed at
 something interesting.
@@ -47,7 +65,7 @@ something interesting.
   the same pybullet sim used by the robot driver, convert to a cloud
   in world frame.
 
-## 4. Phase 2 frame alignment ⏱ 1h
+## 5. Phase 2 frame alignment ⏱ 1h
 
 Replace the "fixed offset in local-floor" cheat with a one-time
 recenter step:
@@ -58,15 +76,15 @@ recenter step:
 - Server persists the transform and applies it to the point cloud and
   workspace renderings.
 
-## 5. Real arm driver — *blocked on hardware*
+## 6. Real arm driver — *needs hardware validation*
 
-`AeroArmDriver` is a stub today because we don't have the arm yet.
-When the hardware ships:
+`AeroArmDriver` contains the RC5/Aero SDK wiring, but still needs a
+hardware validation session:
 
-- Connect arm SDK in `start()`.
-- Solve / send wrist target in `send()`.
-- Read back actual pose in `get_state()`.
-- The Aero hand fingers piggy-back as in the old project.
+- Confirm controller state recovery in `start()` and before commands.
+- Tune RC5 waypoint speed/acceleration for dashboard-approved plans.
+- Verify `get_state()` timestamps stay fresh enough for safety checks.
+- Validate Aero actuator-space commands against the real hand limits.
 
 `TeleopServer` does not change — same interface in, different
 hardware out.

@@ -1,30 +1,28 @@
 # vr_arm_teleop
 
-VR teleoperation of a robot arm + hand using a Meta Quest, fused
-multi-camera depth, and Cartesian wrist tracking. The operator wears
-the headset, sees a point-cloud reconstruction of the workspace, holds
-the **left controller trigger** to engage, and moves their own right
-wrist to drive the robot's wrist. Finger curls stream through after a
-one-time calibration.
-
-This is a *Cartesian* teleop — only the wrist pose + finger curls
-cross the human→robot boundary. The arm's IK takes care of the rest.
+Dashboard-first control of a robot arm + Aero Hand using fused
+multi-camera depth, tabletop cube detection, PyBullet preview, and
+optional VR teleoperation. The desktop web dashboard is the source of
+truth for setup and hardware motion: it owns workspace editing, cube
+selection, simulation preview, approval, and execution. VR/WebXR remains
+available as an auxiliary view/input path.
 
 ---
 
 ## What works today
 
 The end-to-end mock loop runs on a single laptop: launch the server
-with a sim robot, connect from a Quest browser, calibrate fingers,
-and drive a pybullet wrist around in real time.
+with a sim robot, open the dashboard, inspect the point cloud/cubes,
+adjust the workspace, simulate a grasp plan, then explicitly approve
+the movement.
 
 Implemented:
 
-- **`teleop_core/`** — types, workspace (axis-aligned box with
-  `contains` / `clamp`), finger calibration FSM (6-step prompt flow),
-  `CartesianTracker` (anchor + delta math), WebSocket message
-  dataclasses + JSON codec, and `TeleopServer` orchestrating the
-  four async loops (control, command, point cloud, safety stub).
+- **`teleop_core/`** — types, oriented gripper workspace box with
+  `contains` / `clamp`, dashboard command approval gate, finger
+  calibration FSM (6-step prompt flow), `CartesianTracker` (anchor +
+  delta math for optional VR), WebSocket message dataclasses + JSON
+  codec, and `TeleopServer` orchestration.
 - **Point cloud backend** — `MockPointCloudSource` (synthetic
   animated cloud), plus hardware capture/fusion plumbing for mixed
   RealSense and ZED 2i camera configs. Real hardware clouds are gated
@@ -32,8 +30,14 @@ Implemented:
 - **Robot backends** — `NoopRobotDriver` (logs commands),
   `PybulletRobotDriver` (full 6-DoF arm via `calculateInverseKinematics`
   + tendon-coupled hand fingers, URDF in `urdf_rc5_right_hand/`),
+  `PybulletPlanSimulator` (separate mock copy for dashboard approval),
   `FloatingWristDriver` (6-DoF floating wrist for development without
   IK).
+- **Dashboard control gate** — `/api/control/enable` must be called
+  before dashboard motion can be planned. Cube selection creates a
+  pending Aero grasp plan and runs it through a PyBullet mirror; only a
+  matching `/api/grasp/approve` sends the stored commands to the robot
+  driver.
 - **WebXR frontend** (`webxr_app/static/`) — Three.js scene + WebXR
   session, per-frame input reader, tracked-hand visualization,
   controller models, point-cloud renderer bound to the binary stream,
@@ -65,7 +69,7 @@ Not implemented yet — see [ROADMAP.md](ROADMAP.md):
 
 - Camera-to-robot calibration for physically aligned hardware point clouds
 - `PybulletPointCloudSource` (depth render from sim as a fake sensor)
-- `AeroArmDriver` (real arm — hardware not on hand)
+- Hardware validation/tuning of `AeroArmDriver` and dashboard-approved plans
 - `SafetyMonitor.step` + a couple of state-transition hooks in
   `TeleopServer`
 
@@ -99,18 +103,28 @@ python -m webxr_app \
   --cert certs/cert.pem --key certs/key.pem
 ```
 
-On the Quest browser, open `https://<your-LAN-ip>:8000`, accept the
-self-signed cert warning, tap **Enter VR**. You should see an animated
-point cloud and a workspace wireframe in front of you.
+Open the dashboard at `https://<your-LAN-ip>:8001` (or
+`http://localhost:8001` without TLS). The Quest/WebXR page at port
+`8000` is optional.
 
-### Setup dashboard
+### Dashboard workflow
 
-The server also starts a read-only desktop dashboard on
-`http://<host>:8001` by default. It renders the configured URDF,
-the fused point cloud, workspace bounds, and Quest head/right-wrist
-markers after the operator engages tracking once. The dashboard is
-observability-only in v1: it does not write config files or command
-robot motion.
+The server starts the desktop dashboard on `http://<host>:8001` by
+default. It renders the configured URDF, fused point cloud, gripper
+workspace, detected cubes, and Quest head/right-wrist markers when VR is
+connected.
+
+Primary motion flow:
+
+1. Click **Adjust Workspace** to translate, rotate, or resize the
+   oriented gripper box with Three.js transform controls; click **Save**
+   to replace the runtime safety workspace.
+2. Click **Enable Control**. This disables VR trigger-commanded motion.
+3. Click a detected cube, then **Simulate Grasp**. The server creates an
+   Aero thumb/index pinch plan, validates every wrist target against the
+   workspace, and runs the command sequence on a separate PyBullet copy.
+4. Inspect the pending simulation result, then click **Approve Move**.
+   Only this matching approval sends the stored commands to the robot.
 
 ### Wired alternative (no cert needed)
 
@@ -120,7 +134,10 @@ python -m webxr_app --pc-backend mock --robot-backend pybullet
 # Then in the Quest browser: http://localhost:8000
 ```
 
-### Operating it in VR
+### Optional VR operation
+
+VR teleoperation is auxiliary. It is blocked while dashboard control mode
+is enabled.
 
 1. **Finger calibration** — head-locked panel walks through 6 poses;
    press **X** on the left controller to advance each step.
@@ -149,9 +166,9 @@ python -m webxr_app --pc-backend mock --robot-backend pybullet
 | `--pybullet-gui` | off | Show pybullet GUI window |
 | `--home-joints` | derived | 6 comma-separated radians, e.g. `0,-2.0,1.8,-1.4,1.57,0` |
 | `--cameras` | – | camera config JSON for `--pc-backend hardware` or `realsense` |
-| `--workspace` | derived from home | `workspace.json` with `{"min":[x,y,z],"max":[x,y,z]}` |
+| `--workspace` | derived from home | Workspace JSON; supports legacy `{"min":[...],"max":[...]}` or oriented `{"center":[...],"half_extents":[...],"orientation":[x,y,z,w]}` |
 | `--port` | `8000` | HTTP/HTTPS port |
-| `--dashboard-port` | `8001` | Read-only desktop setup dashboard port |
+| `--dashboard-port` | `8001` | Desktop control dashboard port |
 | `--cert` / `--key` | – | TLS cert + key (required for non-localhost Quest) |
 
 ### Hardware camera config
@@ -215,10 +232,13 @@ webxr_app/           CLI that wires backends together
   get_state, home_pose}`.
 - **`teleop_core/messages.py`** — every JSON message that crosses the
   WebSocket. Frontend `modules/comms.js` mirrors this.
+- **`teleop_core/dashboard_control.py`** — dashboard control-mode state,
+  workspace updates, cube-plan simulation gate, and approval-only
+  execution.
 
 Pure logic modules — extend / fix in place, don't subclass:
 
-- `workspace.py` — axis-aligned box, `contains` + `clamp`.
+- `workspace.py` — oriented gripper box, `contains` + `clamp`.
 - `calibration.py` — `FingerCalibrationFSM` and the captured record.
 - `tracking.py` — `CartesianTracker` (anchor + delta math).
 - `safety.py` — `SafetyMonitor` (lag detection, workspace exit — stub).
@@ -232,9 +252,10 @@ Pure logic modules — extend / fix in place, don't subclass:
 | `play_space` | where the headset booted (WebXR `local-floor`) | user wrist samples |
 | `view` | head, moves with user | head-locked text overlays |
 
-Because we drive the robot via *deltas from an anchor*, no explicit
-`play_space → world` transform is needed for the tracking math — the
-anchor pair captured at trigger-down implicitly defines it.
+For optional VR teleop, because we drive the robot via *deltas from an
+anchor*, no explicit `play_space → world` transform is needed for the
+tracking math — the anchor pair captured at trigger-down implicitly
+defines it.
 
 For rendering the point cloud and workspace box in the user's view,
 v1 cheats: they're placed at a fixed offset in `local-floor` space.
@@ -285,7 +306,8 @@ teleop_core/
   types.py            Pose, Vec3
   point_cloud.py      PointCloudFrame, PointCloudSource, encode_frame
   robot.py            RobotState, RobotCommand, RobotDriver
-  workspace.py        Workspace (axis-aligned box)
+  workspace.py        Workspace (oriented gripper box)
+  dashboard_control.py Dashboard command gate + pending plans
   calibration.py      FingerCalibrationFSM, CalibrationRecord, steps
   tracking.py         CartesianTracker, TrackingResult, WristAnchor
   safety.py           SafetyMonitor (stub), SafetyEvent

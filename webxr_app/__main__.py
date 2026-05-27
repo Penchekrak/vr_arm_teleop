@@ -64,9 +64,11 @@ def _make_robot_driver(name: str, args: argparse.Namespace):
     """Resolve --robot-backend into a RobotDriver instance."""
     if name == "noop":
         from teleop_backends.robot import NoopRobotDriver
+
         return NoopRobotDriver(home=Pose.identity(frame="world"))
     if name == "pybullet":
         from teleop_backends.robot import PybulletRobotDriver
+
         urdf = args.urdf
         if urdf is None:
             # Canonical full robot model: arm + prehand D405 + right hand,
@@ -78,6 +80,7 @@ def _make_robot_driver(name: str, args: argparse.Namespace):
         )
     if name == "floating":
         from teleop_backends.robot import FloatingWristDriver
+
         urdf = args.urdf
         if urdf is None:
             urdf = _default_floating_urdf()
