@@ -402,7 +402,15 @@ def test_dashboard_snapshot_contains_detected_cubes_from_reference_cloud():
                 ],
                 dtype=np.float32,
             )
-            points = np.vstack([top, side])
+            table = np.array(
+                [
+                    [x, y, 0.0]
+                    for x in np.linspace(0.06, 0.18, 12)
+                    for y in np.linspace(-0.01, 0.08, 8)
+                ],
+                dtype=np.float32,
+            )
+            points = np.vstack([table, top, side])
             self.frame = PointCloudFrame(
                 points=points,
                 colors=np.repeat(np.array([[200, 20, 20]], dtype=np.uint8), len(points), axis=0),
@@ -427,7 +435,7 @@ def test_dashboard_snapshot_contains_detected_cubes_from_reference_cloud():
         assert snap["cubes"]["count"] == 1
         cube = snap["cubes"]["items"][0]
         assert cube["id"] == "cube-0"
-        assert cube["edge_m"] == 0.038
+        assert cube["edge_m"] == pytest.approx(0.038, abs=1e-6)
         assert cube["center_m"] == pytest.approx([0.119, 0.039, 0.019], abs=0.008)
         assert cube["roll_rad"] == 0.0
         assert cube["pitch_rad"] == 0.0
