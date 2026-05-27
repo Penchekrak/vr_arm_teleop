@@ -39,6 +39,9 @@ class HardwareCameraConfig:
     width: int = 424
     height: int = 240
     fps: int = 30
+    color_width: int | None = None
+    color_height: int | None = None
+    color_fps: int | None = None
     downsample: int = 4
     z_min: float = 0.15
     z_max: float = 2.5
@@ -74,6 +77,15 @@ class CalibrationCameraFrame:
     descriptor: CameraDescriptor
     timestamp: float | None = None
     frame_number: int | None = None
+
+
+@dataclass(frozen=True)
+class _RealSenseVideoProfile:
+    stream: object
+    format: object
+    width: int
+    height: int
+    fps: int
 
 
 class CameraPointCloudReader(abc.ABC):
@@ -178,6 +190,9 @@ def _parse_camera(raw: dict, index: int) -> HardwareCameraConfig:
     downsample = int(raw.get("downsample", 4))
     if downsample <= 0:
         raise ValueError(f"camera {name!r} downsample must be positive")
+    color_width = raw.get("color_width")
+    color_height = raw.get("color_height")
+    color_fps = raw.get("color_fps")
 
     return HardwareCameraConfig(
         name=name,
@@ -191,6 +206,9 @@ def _parse_camera(raw: dict, index: int) -> HardwareCameraConfig:
         width=int(raw.get("width", 424)),
         height=int(raw.get("height", 240)),
         fps=int(raw.get("fps", 30)),
+        color_width=None if color_width is None else int(color_width),
+        color_height=None if color_height is None else int(color_height),
+        color_fps=None if color_fps is None else int(color_fps),
         downsample=downsample,
         z_min=z_min,
         z_max=z_max,
@@ -342,8 +360,8 @@ class HardwarePointCloudSource(PointCloudSource):
             feed: dict[str, object] = {
                 "name": camera.name,
                 "url": f"/api/cameras/{quote(camera.name, safe='')}/color.jpg",
-                "width": int(camera.width),
-                "height": int(camera.height),
+                "width": int(camera.color_width or camera.width),
+                "height": int(camera.color_height or camera.height),
             }
             if camera.urdf_link:
                 feed["urdf_link"] = camera.urdf_link
@@ -438,6 +456,245 @@ def default_reader_factory(camera: HardwareCameraConfig) -> CameraPointCloudRead
     raise ValueError(f"unsupported camera type: {camera.camera_type!r}")
 
 
+def _resolve_realsense_stream_profiles(
+    rs,
+    camera: HardwareCameraConfig,
+) -> tuple[_RealSenseVideoProfile, _RealSenseVideoProfile]:
+    requested_depth = _RealSenseVideoProfile(
+        stream=rs.stream.depth,
+        format=rs.format.z16,
+        width=int(camera.width),
+        height=int(camera.height),
+        fps=int(camera.fps),
+    )
+    requested_color = _RealSenseVideoProfile(
+        stream=rs.stream.color,
+        format=rs.format.rgb8,
+        width=int(camera.color_width or 0),
+        height=int(camera.color_height or 0),
+        fps=int(camera.color_fps or 0),
+    )
+    profiles = _realsense_profiles_for_camera(rs, camera)
+    if profiles is None:
+        color_width = camera.color_width or camera.width
+        color_height = camera.color_height or camera.height
+        color_fps = camera.color_fps or camera.fps
+        return requested_depth, _RealSenseVideoProfile(
+            stream=rs.stream.color,
+            format=rs.format.rgb8,
+            width=int(color_width),
+            height=int(color_height),
+            fps=int(color_fps),
+        )
+    depth_profile = _choose_realsense_depth_profile(
+        profiles,
+        requested_depth,
+        camera=camera,
+    )
+    color_profile = _choose_realsense_color_profile(
+        profiles,
+        requested_color,
+        fallback_fps=depth_profile.fps,
+        target_area=depth_profile.width * depth_profile.height,
+        camera=camera,
+    )
+    return depth_profile, color_profile
+
+
+def _realsense_profiles_for_camera(
+    rs,
+    camera: HardwareCameraConfig,
+) -> list[_RealSenseVideoProfile] | None:
+    if not camera.serial:
+        return None
+    context_factory = getattr(rs, "context", None)
+    if not callable(context_factory):
+        return None
+    try:
+        devices = list(context_factory().query_devices())
+    except Exception:
+        return None
+
+    connected_serials: list[str] = []
+    serial_info = getattr(getattr(rs, "camera_info", object()), "serial_number", None)
+    for device in devices:
+        try:
+            serial = str(device.get_info(serial_info))
+        except Exception:
+            continue
+        connected_serials.append(serial)
+        if serial == camera.serial:
+            return _realsense_video_profiles(device)
+
+    connected = ", ".join(connected_serials) if connected_serials else "none"
+    raise RuntimeError(
+        f"RealSense camera {camera.name!r} serial {camera.serial!r} is not connected; "
+        f"connected serials: {connected}"
+    )
+
+
+def _realsense_video_profiles(device) -> list[_RealSenseVideoProfile]:
+    profiles: list[_RealSenseVideoProfile] = []
+    seen: set[tuple[str, str, int, int, int]] = set()
+    for sensor in device.query_sensors():
+        for raw_profile in sensor.get_stream_profiles():
+            try:
+                video_profile = raw_profile.as_video_stream_profile()
+                profile = _RealSenseVideoProfile(
+                    stream=raw_profile.stream_type(),
+                    format=raw_profile.format(),
+                    width=int(video_profile.width()),
+                    height=int(video_profile.height()),
+                    fps=int(raw_profile.fps()),
+                )
+            except Exception:
+                continue
+            key = (
+                repr(profile.stream),
+                repr(profile.format),
+                profile.width,
+                profile.height,
+                profile.fps,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            profiles.append(profile)
+    return profiles
+
+
+def _choose_realsense_depth_profile(
+    profiles: list[_RealSenseVideoProfile],
+    requested: _RealSenseVideoProfile,
+    *,
+    camera: HardwareCameraConfig,
+) -> _RealSenseVideoProfile:
+    for profile in profiles:
+        if _realsense_profile_matches(profile, requested):
+            return profile
+    candidates = [
+        profile
+        for profile in profiles
+        if profile.stream == requested.stream and profile.format == requested.format
+    ]
+    if not candidates:
+        raise RuntimeError(
+            f"RealSense camera {camera.name!r} serial {camera.serial!r} exposes no Z16 "
+            "depth video profiles"
+        )
+    chosen = _sort_realsense_profiles(
+        candidates,
+        preferred_fps=requested.fps,
+        target_area=requested.width * requested.height,
+        prefer_at_least_target=True,
+    )[0]
+    print(
+        f"[pointcloud] RealSense {camera.name} requested depth "
+        f"{requested.width}x{requested.height}@{requested.fps} is unsupported; "
+        f"using {chosen.width}x{chosen.height}@{chosen.fps}"
+    )
+    return chosen
+
+
+def _choose_realsense_color_profile(
+    profiles: list[_RealSenseVideoProfile],
+    requested: _RealSenseVideoProfile,
+    *,
+    fallback_fps: int,
+    target_area: int,
+    camera: HardwareCameraConfig,
+) -> _RealSenseVideoProfile:
+    candidates = [
+        profile
+        for profile in profiles
+        if profile.stream == requested.stream and profile.format == requested.format
+    ]
+    explicit = requested.width > 0 or requested.height > 0 or requested.fps > 0
+    if explicit:
+        matches = [
+            profile
+            for profile in candidates
+            if (requested.width <= 0 or profile.width == requested.width)
+            and (requested.height <= 0 or profile.height == requested.height)
+            and (requested.fps <= 0 or profile.fps == requested.fps)
+        ]
+        if matches:
+            return _sort_realsense_profiles(
+                matches,
+                preferred_fps=fallback_fps,
+                target_area=target_area,
+                prefer_at_least_target=True,
+            )[0]
+        supported = _format_realsense_profiles(candidates)
+        requested_text = (
+            f"{requested.width or '*'}x{requested.height or '*'}@"
+            f"{requested.fps or '*'}"
+        )
+        raise RuntimeError(
+            f"RealSense camera {camera.name!r} serial {camera.serial!r} does not support "
+            f"requested color profile {requested_text}; "
+            f"supported color profiles: {supported}"
+        )
+    if not candidates:
+        raise RuntimeError(
+            f"RealSense camera {camera.name!r} serial {camera.serial!r} exposes no RGB8 "
+            "color video profiles"
+        )
+    return _sort_realsense_profiles(
+        candidates,
+        preferred_fps=fallback_fps,
+        target_area=target_area,
+        prefer_at_least_target=True,
+    )[0]
+
+
+def _realsense_profile_matches(
+    profile: _RealSenseVideoProfile,
+    requested: _RealSenseVideoProfile,
+) -> bool:
+    return (
+        profile.stream == requested.stream
+        and profile.format == requested.format
+        and profile.width == requested.width
+        and profile.height == requested.height
+        and profile.fps == requested.fps
+    )
+
+
+def _sort_realsense_profiles(
+    profiles: list[_RealSenseVideoProfile],
+    *,
+    preferred_fps: int,
+    target_area: int = 640 * 480,
+    prefer_at_least_target: bool = False,
+) -> list[_RealSenseVideoProfile]:
+    return sorted(
+        profiles,
+        key=lambda profile: (
+            profile.fps != preferred_fps,
+            (
+                prefer_at_least_target
+                and profile.width * profile.height < target_area
+            ),
+            abs((profile.width * profile.height) - target_area),
+            profile.width * profile.height,
+            profile.width,
+            profile.height,
+            profile.fps,
+        ),
+    )
+
+
+def _format_realsense_profiles(profiles) -> str:
+    items = _sort_realsense_profiles(list(profiles), preferred_fps=30)
+    if not items:
+        return "none"
+    return ", ".join(
+        f"{profile.width}x{profile.height}@{profile.fps}"
+        for profile in items[:12]
+    )
+
+
 class RealSensePointCloudReader(CameraPointCloudReader):
     """Reader for one Intel RealSense depth camera."""
 
@@ -455,6 +712,9 @@ class RealSensePointCloudReader(CameraPointCloudReader):
         self._latest_frame_number: int | None = None
         self._depth_scale = 0.001
         self._consecutive_timeouts = 0
+        self._active_color_width = camera.color_width or camera.width
+        self._active_color_height = camera.color_height or camera.height
+        self._active_color_fps = camera.color_fps or camera.fps
 
     async def start(self) -> None:
         try:
@@ -471,21 +731,36 @@ class RealSensePointCloudReader(CameraPointCloudReader):
         config = rs.config()
         if self._camera.serial:
             config.enable_device(self._camera.serial)
+        depth_profile, color_profile = _resolve_realsense_stream_profiles(
+            rs,
+            self._camera,
+        )
+        self._active_color_width = color_profile.width
+        self._active_color_height = color_profile.height
+        self._active_color_fps = color_profile.fps
         config.enable_stream(
             rs.stream.depth,
-            self._camera.width,
-            self._camera.height,
+            depth_profile.width,
+            depth_profile.height,
             rs.format.z16,
-            self._camera.fps,
+            depth_profile.fps,
         )
         config.enable_stream(
             rs.stream.color,
-            self._camera.width,
-            self._camera.height,
+            color_profile.width,
+            color_profile.height,
             rs.format.rgb8,
-            self._camera.fps,
+            color_profile.fps,
         )
-        self._profile = pipeline.start(config)
+        try:
+            self._profile = pipeline.start(config)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"failed to start RealSense {self._camera.name!r} with "
+                f"depth {depth_profile.width}x{depth_profile.height}@{depth_profile.fps} "
+                f"and color {color_profile.width}x{color_profile.height}@{color_profile.fps}: "
+                f"{exc}"
+            ) from exc
         self._rs = rs
         self._pipeline = pipeline
         self._align = rs.align(rs.stream.color)
@@ -625,9 +900,9 @@ class RealSensePointCloudReader(CameraPointCloudReader):
             name=self._camera.name,
             camera_type="realsense",
             serial=self._camera.serial,
-            width=self._camera.width,
-            height=self._camera.height,
-            fps=self._camera.fps,
+            width=self._active_color_width,
+            height=self._active_color_height,
+            fps=self._active_color_fps,
             camera_matrix=[
                 [float(intr.fx), 0.0, float(intr.ppx)],
                 [0.0, float(intr.fy), float(intr.ppy)],
