@@ -70,3 +70,32 @@ def test_cube_detector_temporal_voxel_averaging_rejects_single_frame_clutter():
 
     assert result.count == 1
     assert np.allclose(result.cubes[0].center_m, [0.16, 0.04, 0.019], atol=0.006)
+
+
+def test_cube_detector_caps_work_on_pathological_point_clouds():
+    points = np.array(
+        [
+            [x, y, 0.02]
+            for x in np.linspace(-0.2, 0.2, 20, dtype=np.float32)
+            for y in np.linspace(-0.2, 0.2, 20, dtype=np.float32)
+        ],
+        dtype=np.float32,
+    )
+    detector = CubeDetector(CubeDetectionConfig(
+        window_size=1,
+        min_observations=1,
+        voxel_m=0.001,
+        cluster_eps_m=0.0001,
+        min_cluster_points=999,
+        max_stable_points=40,
+        max_fit_clusters=3,
+    ))
+
+    result = detector.process(_frame(points))
+
+    assert result.count == 0
+    assert result.stats["stable_points_before_limit"] > 40
+    assert result.stats["stable_points"] == 40
+    assert result.stats["clusters"] == 40
+    assert result.stats["fit_clusters"] == 3
+    assert result.stats["truncated_clusters"] == 37

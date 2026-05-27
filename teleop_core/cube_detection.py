@@ -113,6 +113,9 @@ class CubeDetectionConfig:
     min_surface_fraction: float = 0.34
     nms_distance_m: float = 0.024
     max_cubes: int = 24
+    max_stable_points: int = 6000
+    max_fit_clusters: int = 64
+    max_fit_points_per_cluster: int = 1200
 
 
 class CubeDetector:
@@ -148,15 +151,27 @@ class CubeDetector:
         keys, averaged = _voxel_average(points, self.config.voxel_m)
         self._frames.append((keys, averaged))
         stable = self._stable_voxels()
+        stable_points_before_limit = int(stable.shape[0])
+        stable = _limit_points(stable, self.config.max_stable_points)
         clusters = _cluster_xy(stable, self.config.cluster_eps_m)
+        cluster_count = len(clusters)
+        clusters.sort(key=len, reverse=True)
+        max_fit_clusters = max(0, int(self.config.max_fit_clusters))
+        if max_fit_clusters:
+            fit_clusters = clusters[:max_fit_clusters]
+        else:
+            fit_clusters = []
+        truncated_clusters = max(0, cluster_count - len(fit_clusters))
 
         candidates = []
-        rejected = 0
-        for cluster in clusters:
+        rejected = truncated_clusters
+        for cluster in fit_clusters:
             if len(cluster) < self.config.min_cluster_points:
                 rejected += 1
                 continue
-            fit = self._fit_cluster(cluster)
+            fit = self._fit_cluster(
+                _limit_points(cluster, self.config.max_fit_points_per_cluster)
+            )
             if fit is None:
                 rejected += 1
                 continue
@@ -194,8 +209,11 @@ class CubeDetector:
             stats={
                 "input_points": int(np.asarray(frame.points).shape[0]),
                 "height_filtered_points": int(points.shape[0]),
+                "stable_points_before_limit": stable_points_before_limit,
                 "stable_points": int(stable.shape[0]),
-                "clusters": int(len(clusters)),
+                "clusters": int(cluster_count),
+                "fit_clusters": int(len(fit_clusters)),
+                "truncated_clusters": int(truncated_clusters),
                 "rejected_clusters": int(rejected),
                 "window_frames": int(len(self._frames)),
                 "min_observations": int(min(self.config.min_observations, len(self._frames))),
@@ -324,6 +342,14 @@ def _cluster_xy(points: np.ndarray, eps_m: float) -> list[np.ndarray]:
                     queue.append(neighbor)
         clusters.append(points[np.asarray(members, dtype=np.int64)])
     return clusters
+
+
+def _limit_points(points: np.ndarray, limit: int) -> np.ndarray:
+    limit = int(limit)
+    if limit <= 0 or len(points) <= limit:
+        return points
+    indices = np.linspace(0, len(points) - 1, limit, dtype=np.int64)
+    return points[indices]
 
 
 def _principal_yaw(xy: np.ndarray) -> float:

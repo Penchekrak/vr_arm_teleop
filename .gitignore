@@ -5,3 +5,4 @@ __pycache__/
 certs/
 .DS_Store
 vr_arm_teleop.zip
+config

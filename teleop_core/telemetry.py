@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -92,6 +93,7 @@ class TelemetryHub:
         calibration_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
         control_snapshot_provider: Callable[[], dict[str, Any]] | None = None,
         cube_detector: CubeDetector | None = None,
+        cube_detection_timeout_s: float = 0.25,
     ) -> None:
         self._pc = point_cloud_source
         self._robot = robot_driver
@@ -106,6 +108,9 @@ class TelemetryHub:
         self._control_snapshot_provider = control_snapshot_provider
         self._cube_detector = cube_detector if cube_detector is not None else CubeDetector()
         self._cube_detection: CubeDetectionResult = self._cube_detector.last_result
+        self._cube_detection_timeout_s = max(0.001, float(cube_detection_timeout_s))
+        self._cube_detection_task: asyncio.Task | None = None
+        self._cube_detection_executor: ThreadPoolExecutor | None = None
         self._robot_state: RobotState | None = None
         self._robot_error: str | None = None
         self._pointcloud: EncodedPointCloud | None = None
@@ -137,6 +142,14 @@ class TelemetryHub:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._tasks = []
+        if self._cube_detection_task is not None:
+            self._cube_detection_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cube_detection_task
+            self._cube_detection_task = None
+        if self._cube_detection_executor is not None:
+            self._cube_detection_executor.shutdown(wait=False, cancel_futures=True)
+            self._cube_detection_executor = None
 
     async def sample_robot_once(self) -> None:
         try:
@@ -154,7 +167,6 @@ class TelemetryHub:
             self._pointcloud_error = repr(exc)
         if frame is None:
             return
-        self._sample_cubes(frame)
         payload = encode_frame(frame)
         async with self._cloud_condition:
             self._pointcloud_sequence += 1
@@ -165,6 +177,7 @@ class TelemetryHub:
                 n_points=int(frame.n_points),
             )
             self._cloud_condition.notify_all()
+        self._schedule_cube_detection(frame)
 
     @property
     def latest_cube_detection(self) -> CubeDetectionResult:
@@ -179,19 +192,100 @@ class TelemetryHub:
     ) -> None:
         self._control_snapshot_provider = provider
 
-    def _sample_cubes(self, display_frame) -> None:
+    def _schedule_cube_detection(self, display_frame) -> None:
+        if self._stopping:
+            return
+        task = self._cube_detection_task
+        if task is not None:
+            if not task.done():
+                return
+            with contextlib.suppress(asyncio.CancelledError):
+                task.result()
+            self._cube_detection_task = None
+
         reference_frame = display_frame
         reference_getter = getattr(self._pc, "latest_cube_reference_frame", None)
         if callable(reference_getter):
-            reference_frame = reference_getter()
+            try:
+                reference_frame = reference_getter()
+            except Exception as exc:
+                self._cube_detection = self._cube_error_result(
+                    "cube_reference_frame_error",
+                    timestamp=getattr(display_frame, "timestamp", None),
+                    reason=repr(exc),
+                )
+                return
+
+        self._cube_detection_task = asyncio.create_task(
+            self._run_cube_detection(reference_frame),
+            name="telemetry_cube_detection",
+        )
+
+    async def _run_cube_detection(self, reference_frame) -> None:
+        loop = asyncio.get_running_loop()
+        timestamp = getattr(reference_frame, "timestamp", None)
         try:
-            self._cube_detection = self._cube_detector.process(reference_frame)
-        except Exception as exc:
-            self._cube_detection = CubeDetectionResult(
-                sequence=self._cube_detector.last_result.sequence + 1,
-                timestamp=None,
-                error=repr(exc),
+            executor = self._cube_executor()
+            future = loop.run_in_executor(
+                executor,
+                self._cube_detector.process,
+                reference_frame,
             )
+            result = await asyncio.wait_for(
+                asyncio.shield(future),
+                timeout=self._cube_detection_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            self._cube_detection = self._cube_error_result(
+                "cube_detection_timeout",
+                timestamp=timestamp,
+                timeout_s=self._cube_detection_timeout_s,
+            )
+            try:
+                await future
+            except Exception as exc:
+                self._cube_detection = self._cube_error_result(
+                    "cube_detection_error",
+                    timestamp=timestamp,
+                    reason=repr(exc),
+                )
+            return
+        except Exception as exc:
+            self._cube_detection = self._cube_error_result(
+                "cube_detection_error",
+                timestamp=timestamp,
+                reason=repr(exc),
+            )
+            return
+        self._cube_detection = result
+
+    def _cube_executor(self) -> ThreadPoolExecutor:
+        if self._cube_detection_executor is None:
+            self._cube_detection_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="cube-detection",
+            )
+        return self._cube_detection_executor
+
+    def _cube_error_result(
+        self,
+        error: str,
+        *,
+        timestamp: float | None,
+        **stats,
+    ) -> CubeDetectionResult:
+        last_detector_result = getattr(self._cube_detector, "last_result", None)
+        last_detector_sequence = (
+            0
+            if last_detector_result is None
+            else int(getattr(last_detector_result, "sequence", 0))
+        )
+        return CubeDetectionResult(
+            sequence=max(int(self._cube_detection.sequence), last_detector_sequence) + 1,
+            timestamp=None if timestamp is None else float(timestamp),
+            error=error,
+            stats=stats,
+        )
 
     async def wait_for_pointcloud(
         self,

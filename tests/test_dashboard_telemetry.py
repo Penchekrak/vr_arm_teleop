@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from teleop_core.point_cloud import PointCloudFrame
-from teleop_core.cube_detection import CubeDetectionConfig, CubeDetector
+from teleop_core.cube_detection import CubeDetectionConfig, CubeDetectionResult, CubeDetector
 from teleop_core.robot import RobotState
 from teleop_core.server import _resolve_robot_asset_path
 from teleop_core.telemetry import TelemetryHub
@@ -85,11 +85,42 @@ class CountingPointCloud:
         ]
 
 
+class SlowCubeDetector:
+    def __init__(self, *, delay_s=0.1, result=None):
+        self.delay_s = float(delay_s)
+        self.calls = 0
+        self.last_result = CubeDetectionResult(sequence=0, timestamp=None)
+        self.result = result
+
+    def process(self, frame):
+        self.calls += 1
+        time.sleep(self.delay_s)
+        if self.result is not None:
+            self.last_result = self.result
+        else:
+            self.last_result = CubeDetectionResult(
+                sequence=self.calls,
+                timestamp=None if frame is None else float(frame.timestamp),
+            )
+        return self.last_result
+
+
 def _workspace():
     return Workspace(
         min_corner=np.array([-1.0, -2.0, 0.0], dtype=np.float32),
         max_corner=np.array([1.0, 2.0, 1.0], dtype=np.float32),
     )
+
+
+async def _wait_for_cube_snapshot(hub, *, count, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    snap = hub.snapshot()
+    while time.monotonic() < deadline:
+        snap = hub.snapshot()
+        if snap["cubes"]["count"] == count or snap["cubes"]["error"] is not None:
+            return snap
+        await asyncio.sleep(0.01)
+    return snap
 
 
 def test_dashboard_snapshot_contains_model_workspace_robot_and_unaligned_xr():
@@ -260,6 +291,96 @@ def test_multiple_dashboard_cloud_waiters_share_one_grab():
     asyncio.run(run())
 
 
+def test_pointcloud_sampling_publishes_without_waiting_for_slow_cube_detection():
+    async def run():
+        detector = SlowCubeDetector(delay_s=0.12)
+        hub = TelemetryHub(
+            point_cloud_source=CountingPointCloud(),
+            robot_driver=FakeRobot(),
+            workspace=_workspace(),
+            urdf_url="/robot/robot.urdf",
+            urdf_assets_url="/robot/assets/",
+            cube_detector=detector,
+            cube_detection_timeout_s=1.0,
+        )
+
+        start = time.monotonic()
+        await hub.sample_pointcloud_once()
+        elapsed = time.monotonic() - start
+        cloud = await hub.wait_for_pointcloud(after_sequence=0, timeout=0.01)
+
+        assert elapsed < 0.05
+        assert cloud is not None
+        assert cloud.sequence == 1
+
+        await asyncio.sleep(0.15)
+        await hub.stop()
+
+    asyncio.run(run())
+
+
+def test_slow_cube_detection_times_out_without_blocking_future_pointclouds():
+    async def run():
+        detector = SlowCubeDetector(delay_s=0.12)
+        hub = TelemetryHub(
+            point_cloud_source=CountingPointCloud(),
+            robot_driver=FakeRobot(),
+            workspace=_workspace(),
+            urdf_url="/robot/robot.urdf",
+            urdf_assets_url="/robot/assets/",
+            cube_detector=detector,
+            cube_detection_timeout_s=0.01,
+        )
+
+        await hub.sample_pointcloud_once()
+        await asyncio.sleep(0.03)
+
+        timeout_snapshot = hub.snapshot()
+        assert timeout_snapshot["cubes"]["error"] == "cube_detection_timeout"
+
+        start = time.monotonic()
+        await hub.sample_pointcloud_once()
+        elapsed = time.monotonic() - start
+        cloud = await hub.wait_for_pointcloud(after_sequence=1, timeout=0.01)
+
+        assert elapsed < 0.05
+        assert cloud is not None
+        assert cloud.sequence == 2
+        assert detector.calls == 1
+
+        await asyncio.sleep(0.15)
+        await hub.stop()
+
+    asyncio.run(run())
+
+
+def test_cube_reference_frame_errors_do_not_block_pointcloud_publication():
+    class BadReferencePointCloud(CountingPointCloud):
+        def latest_cube_reference_frame(self):
+            raise RuntimeError("reference unavailable")
+
+    async def run():
+        hub = TelemetryHub(
+            point_cloud_source=BadReferencePointCloud(),
+            robot_driver=FakeRobot(),
+            workspace=_workspace(),
+            urdf_url="/robot/robot.urdf",
+            urdf_assets_url="/robot/assets/",
+        )
+
+        await hub.sample_pointcloud_once()
+        cloud = await hub.wait_for_pointcloud(after_sequence=0, timeout=0.01)
+        snap = hub.snapshot()
+
+        assert cloud is not None
+        assert snap["cubes"]["error"] == "cube_reference_frame_error"
+        assert "reference unavailable" in snap["cubes"]["stats"]["reason"]
+
+        await hub.stop()
+
+    asyncio.run(run())
+
+
 def test_dashboard_snapshot_contains_detected_cubes_from_reference_cloud():
     class CubePointCloud(CountingPointCloud):
         def __init__(self):
@@ -301,7 +422,7 @@ def test_dashboard_snapshot_contains_detected_cubes_from_reference_cloud():
             cube_detector=CubeDetector(CubeDetectionConfig(window_size=1, min_observations=1)),
         )
         await hub.sample_pointcloud_once()
-        snap = hub.snapshot()
+        snap = await _wait_for_cube_snapshot(hub, count=1)
 
         assert snap["cubes"]["count"] == 1
         cube = snap["cubes"]["items"][0]
@@ -311,6 +432,7 @@ def test_dashboard_snapshot_contains_detected_cubes_from_reference_cloud():
         assert cube["roll_rad"] == 0.0
         assert cube["pitch_rad"] == 0.0
         assert "yaw_rad" in cube
+        await hub.stop()
 
     asyncio.run(run())
 
